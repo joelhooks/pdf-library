@@ -14,6 +14,11 @@ import {
   LibraryConfig,
   URLFetchError,
 } from "./index.js";
+import {
+  Migration,
+  MigrationLive,
+  MigrationError,
+} from "./services/Migration.js";
 
 /**
  * Check if a string is a URL
@@ -84,6 +89,11 @@ Commands:
 
   check                   Check if Ollama is ready
 
+  migrate                 Database migration utilities
+    --check               Check if migration is needed
+    --import <file>       Import from SQL dump file
+    --generate-script     Generate export script for current database
+
 Options:
   --help, -h              Show this help
 
@@ -91,6 +101,8 @@ Examples:
   pdf-library add ./book.pdf --tags "programming,rust"
   pdf-library add https://example.com/paper.pdf --title "Research Paper"
   pdf-library search "machine learning" --limit 5
+  pdf-library migrate --check
+  pdf-library migrate --import backup.sql
 `;
 
 function parseArgs(args: string[]) {
@@ -321,15 +333,89 @@ const program = Effect.gen(function* () {
   }
 });
 
-// Run with error handling
-Effect.runPromise(
-  program.pipe(
-    Effect.provide(PDFLibraryLive),
-    Effect.catchAll((error) =>
-      Effect.gen(function* () {
-        yield* Console.error(`Error: ${error._tag}: ${JSON.stringify(error)}`);
-        process.exit(1);
-      }),
+// Handle migrate command separately (doesn't need full PDFLibrary)
+const args = process.argv.slice(2);
+
+if (args[0] === "migrate") {
+  const migrateProgram = Effect.gen(function* () {
+    const opts = parseArgs(args.slice(1));
+    const migration = yield* Migration;
+    const config = LibraryConfig.fromEnv();
+    const dbPath = config.dbPath.replace(".db", "");
+
+    if (opts.check) {
+      const needed = yield* migration.checkMigrationNeeded(dbPath);
+      if (needed) {
+        yield* Console.log(
+          "Migration needed:\n" + migration.getMigrationMessage(),
+        );
+      } else {
+        yield* Console.log("✓ No migration needed - database is compatible");
+      }
+    } else if (opts.import) {
+      yield* migration.importFromDump(opts.import as string, dbPath);
+      yield* Console.log("✓ Import complete");
+    } else if (opts["generate-script"]) {
+      yield* Console.log(migration.generateExportScript(dbPath));
+    } else {
+      // Default: check and show message
+      const needed = yield* migration.checkMigrationNeeded(dbPath);
+      if (needed) {
+        yield* Console.log(migration.getMigrationMessage());
+      } else {
+        yield* Console.log("✓ No migration needed - database is compatible");
+      }
+    }
+  });
+
+  Effect.runPromise(
+    migrateProgram.pipe(
+      Effect.provide(MigrationLive),
+      Effect.catchAll((error) =>
+        Effect.gen(function* () {
+          if (error._tag === "MigrationError") {
+            yield* Console.error(`Migration Error: ${error.message}`);
+          } else {
+            yield* Console.error(
+              `Error: ${error._tag}: ${JSON.stringify(error)}`,
+            );
+          }
+          process.exit(1);
+        }),
+      ),
     ),
-  ),
-);
+  );
+} else {
+  // Run with error handling
+  Effect.runPromise(
+    program.pipe(
+      Effect.provide(PDFLibraryLive),
+      Effect.catchAll((error) =>
+        Effect.gen(function* () {
+          // Check if it's a database initialization error
+          const errorStr = JSON.stringify(error);
+          if (
+            errorStr.includes("PGlite") ||
+            errorStr.includes("version") ||
+            errorStr.includes("incompatible")
+          ) {
+            yield* Console.error(
+              `Database Error: ${error._tag}: ${JSON.stringify(error)}`,
+            );
+            yield* Console.error(
+              "\nThis may be a database version compatibility issue.",
+            );
+            yield* Console.error(
+              "Run 'pdf-library migrate --check' to diagnose.",
+            );
+          } else {
+            yield* Console.error(
+              `Error: ${error._tag}: ${JSON.stringify(error)}`,
+            );
+          }
+          process.exit(1);
+        }),
+      ),
+    ),
+  );
+}

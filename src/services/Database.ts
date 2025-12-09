@@ -97,13 +97,10 @@ export const DatabaseLive = Layer.scoped(
     // PGlite stores data in a directory, not a single file
     const pgDataDir = config.dbPath.replace(".db", "");
 
-    // Initialize PGlite with pgvector extension
-    const db = yield* Effect.tryPromise({
-      try: () =>
-        PGlite.create({
-          dataDir: pgDataDir,
-          extensions: { vector },
-        }),
+    // Initialize PGlite with pgvector extension (0.3.x API)
+    const db = new PGlite(pgDataDir, { extensions: { vector } });
+    yield* Effect.tryPromise({
+      try: () => db.waitReady,
       catch: (e) =>
         new DatabaseError({ reason: `Failed to init PGlite: ${e}` }),
     });
