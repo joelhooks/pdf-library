@@ -1,5 +1,5 @@
 /**
- * PDF Library Types
+ * Document Library Types
  */
 
 import { Schema } from "effect";
@@ -8,7 +8,10 @@ import { Schema } from "effect";
 // Domain Models
 // ============================================================================
 
-export class PDFDocument extends Schema.Class<PDFDocument>("PDFDocument")({
+/**
+ * Represents a document in the library (PDF or Markdown)
+ */
+export class Document extends Schema.Class<Document>("Document")({
   id: Schema.String,
   title: Schema.String,
   path: Schema.String,
@@ -23,6 +26,12 @@ export class PDFDocument extends Schema.Class<PDFDocument>("PDFDocument")({
     Schema.Record({ key: Schema.String, value: Schema.Unknown }),
   ),
 }) {}
+
+/**
+ * @deprecated Use Document instead. Kept for backwards compatibility.
+ */
+export type PDFDocument = Document;
+export const PDFDocument = Document;
 
 export class PDFChunk extends Schema.Class<PDFChunk>("PDFChunk")({
   id: Schema.String,

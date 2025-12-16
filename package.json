@@ -20,10 +20,18 @@
     "@effect/schema": "^0.75.0",
     "@electric-sql/pglite": "^0.3.14",
     "@electric-sql/pglite-tools": "^0.2.19",
-    "effect": "^3.12.0"
+    "effect": "^3.12.0",
+    "gray-matter": "^4.0.3",
+    "mdast-util-to-string": "^4.0.0",
+    "remark-frontmatter": "^5.0.0",
+    "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
+    "unified": "^11.0.5",
+    "unist-util-visit": "^5.0.0"
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "@types/mdast": "^4.0.4",
     "typescript": "^5.7.2"
   },
   "peerDependencies": {
