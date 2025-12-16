@@ -27,3 +27,4 @@ dist/
 postgres.data
 vector.tar.gz
 *.tar.gz
+.opencode/

@@ -5,7 +5,7 @@
 
 import { Effect, Console } from "effect";
 import { mkdirSync, existsSync } from "fs";
-import { basename, join } from "path";
+import { basename, extname, join } from "path";
 import {
   PDFLibrary,
   PDFLibraryLive,
@@ -26,18 +26,59 @@ function isURL(str: string): boolean {
 /**
  * Extract filename from URL
  */
-function filenameFromURL(url: string): string {
+export function filenameFromURL(url: string): string {
   const urlObj = new URL(url);
   const pathname = urlObj.pathname;
   const filename = basename(pathname);
-  // If no .pdf extension, add it
-  return filename.endsWith(".pdf") ? filename : `${filename}.pdf`;
+  const ext = extname(filename).toLowerCase();
+
+  // If already has a recognized extension, keep it
+  if (ext === ".pdf" || ext === ".md" || ext === ".markdown") {
+    return filename;
+  }
+
+  // Default to .pdf for backwards compatibility
+  return `${filename}.pdf`;
+}
+
+/** Size in bytes to peek for Markdown heuristics when content-type is text/plain */
+const MARKDOWN_PEEK_SIZE = 4096;
+
+/** Markdown indicators to look for in content */
+export const MARKDOWN_INDICATORS = [
+  /^#{1,6}\s/m, // Headings: # ## ### etc.
+  /^[-*+]\s/m, // Unordered list markers
+  /^\d+\.\s/m, // Ordered list markers
+  /^```/m, // Code fences
+  /^\|.+\|/m, // Table rows
+  /\[.+\]\(.+\)/m, // Links [text](url)
+];
+
+/**
+ * Check if content looks like Markdown by examining the first N bytes
+ */
+export function looksLikeMarkdown(content: string): boolean {
+  return MARKDOWN_INDICATORS.some((pattern) => pattern.test(content));
 }
 
 /**
- * Download a PDF from URL to local path
+ * Check if URL has a Markdown file extension
  */
-function downloadPDF(url: string, destPath: string) {
+export function hasMarkdownExtension(url: string): boolean {
+  try {
+    const pathname = new URL(url).pathname;
+    const ext = extname(pathname).toLowerCase();
+    return ext === ".md" || ext === ".markdown";
+  } catch {
+    // Fallback for malformed URLs
+    return url.endsWith(".md") || url.endsWith(".markdown");
+  }
+}
+
+/**
+ * Download a file (PDF or Markdown) from URL to local path
+ */
+function downloadFile(url: string, destPath: string) {
   return Effect.tryPromise({
     try: async () => {
       const response = await fetch(url);
@@ -45,8 +86,41 @@ function downloadPDF(url: string, destPath: string) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
       const contentType = response.headers.get("content-type") || "";
-      if (!contentType.includes("pdf") && !url.endsWith(".pdf")) {
-        throw new Error(`Not a PDF: content-type is ${contentType}`);
+
+      // PDF detection: explicit MIME type or .pdf extension
+      const isPDF = contentType.includes("pdf") || url.endsWith(".pdf");
+
+      // Markdown detection: strict MIME types or file extension
+      const hasExplicitMarkdownMime =
+        contentType.includes("text/markdown") ||
+        contentType.includes("text/x-markdown");
+      const hasMarkdownExt = hasMarkdownExtension(url);
+
+      let isMarkdown = hasExplicitMarkdownMime || hasMarkdownExt;
+
+      // Heuristic for text/plain: check URL extension first, then peek at content
+      if (!isPDF && !isMarkdown && contentType.includes("text/plain")) {
+        if (hasMarkdownExt) {
+          isMarkdown = true;
+        } else {
+          // Peek at content to detect Markdown indicators
+          const buffer = await response.arrayBuffer();
+          const decoder = new TextDecoder("utf-8", { fatal: false });
+          const preview = decoder.decode(buffer.slice(0, MARKDOWN_PEEK_SIZE));
+          if (looksLikeMarkdown(preview)) {
+            isMarkdown = true;
+          }
+          // Write the already-fetched buffer
+          if (isPDF || isMarkdown) {
+            await Bun.write(destPath, buffer);
+            return destPath;
+          }
+          throw new Error(`Unsupported content type: ${contentType}`);
+        }
+      }
+
+      if (!isPDF && !isMarkdown) {
+        throw new Error(`Unsupported content type: ${contentType}`);
       }
       const buffer = await response.arrayBuffer();
       await Bun.write(destPath, buffer);
@@ -57,17 +131,17 @@ function downloadPDF(url: string, destPath: string) {
 }
 
 const HELP = `
-pdf-library - Local PDF knowledge base with vector search
+pdf-library - Local PDF and Markdown knowledge base with vector search
 
 Usage:
   pdf-library <command> [options]
 
 Commands:
-  add <path|url>          Add a PDF to the library (supports URLs)
+  add <path|url>          Add a PDF or Markdown file to the library (supports URLs)
     --title <title>       Custom title (default: filename)
     --tags <tags>         Comma-separated tags
 
-  search <query>          Semantic search across all PDFs
+  search <query>          Semantic search across all documents
     --limit <n>           Max results (default: 10)
     --tag <tag>           Filter by tag
     --fts                 Full-text search only (no embeddings)
@@ -104,7 +178,9 @@ Options:
 
 Examples:
   pdf-library add ./book.pdf --tags "programming,rust"
+  pdf-library add ./notes.md --tags "documentation,api"
   pdf-library add https://example.com/paper.pdf --title "Research Paper"
+  pdf-library add https://raw.githubusercontent.com/user/repo/main/README.md
   pdf-library search "machine learning" --limit 5
   pdf-library migrate --check
   pdf-library migrate --import backup.sql
@@ -174,11 +250,12 @@ const program = Effect.gen(function* () {
 
         // Default title from URL filename if not provided
         if (!title) {
-          title = basename(filename, ".pdf");
+          // Strip extension (.pdf, .md, .markdown)
+          title = basename(filename).replace(/\.(pdf|md|markdown)$/, "");
         }
 
         yield* Console.log(`Downloading: ${pathOrUrl}`);
-        yield* downloadPDF(pathOrUrl, localPath);
+        yield* downloadFile(pathOrUrl, localPath);
         yield* Console.log(`  Saved to: ${localPath}`);
       } else {
         localPath = pathOrUrl;
