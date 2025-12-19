@@ -3,6 +3,7 @@ import {
   filenameFromURL,
   looksLikeMarkdown,
   hasMarkdownExtension,
+  assessWALHealth,
   MARKDOWN_INDICATORS,
 } from "./cli.js";
 
@@ -17,13 +18,13 @@ describe("filenameFromURL", () => {
 
   test("preserves .markdown extension", () => {
     expect(filenameFromURL("https://example.com/doc.markdown")).toBe(
-      "doc.markdown",
+      "doc.markdown"
     );
   });
 
   test("defaults to .pdf for unknown extensions", () => {
     expect(filenameFromURL("https://example.com/document")).toBe(
-      "document.pdf",
+      "document.pdf"
     );
   });
 
@@ -31,24 +32,24 @@ describe("filenameFromURL", () => {
     // This was the bug: pathname.includes(".md") was too broad
     // e.g., https://example.com/markdown-docs/file should NOT get .md appended
     expect(filenameFromURL("https://example.com/markdown-docs/file")).toBe(
-      "file.pdf",
+      "file.pdf"
     );
     expect(filenameFromURL("https://example.com/docs.md.backup/file")).toBe(
-      "file.pdf",
+      "file.pdf"
     );
   });
 
   test("handles query strings correctly", () => {
     expect(filenameFromURL("https://example.com/doc.pdf?token=abc")).toBe(
-      "doc.pdf",
+      "doc.pdf"
     );
   });
 
   test("handles GitHub raw URLs with .md extension", () => {
     expect(
       filenameFromURL(
-        "https://raw.githubusercontent.com/user/repo/main/README.md",
-      ),
+        "https://raw.githubusercontent.com/user/repo/main/README.md"
+      )
     ).toBe("README.md");
   });
 });
@@ -60,7 +61,7 @@ describe("hasMarkdownExtension", () => {
 
   test("returns true for .markdown extension", () => {
     expect(hasMarkdownExtension("https://example.com/file.markdown")).toBe(
-      true,
+      true
     );
   });
 
@@ -79,17 +80,17 @@ describe("hasMarkdownExtension", () => {
   test("is case insensitive", () => {
     expect(hasMarkdownExtension("https://example.com/file.MD")).toBe(true);
     expect(hasMarkdownExtension("https://example.com/file.MARKDOWN")).toBe(
-      true,
+      true
     );
   });
 
   test("does NOT match .md in path (only extension)", () => {
     // This is the key fix - .md in the path should not trigger markdown detection
     expect(hasMarkdownExtension("https://example.com/markdown-docs/file")).toBe(
-      false,
+      false
     );
     expect(
-      hasMarkdownExtension("https://example.com/docs.md.backup/file.txt"),
+      hasMarkdownExtension("https://example.com/docs.md.backup/file.txt")
     ).toBe(false);
   });
 });
@@ -135,13 +136,13 @@ describe("looksLikeMarkdown", () => {
 
   test("detects markdown link", () => {
     expect(
-      looksLikeMarkdown("Check out [this link](https://example.com)"),
+      looksLikeMarkdown("Check out [this link](https://example.com)")
     ).toBe(true);
   });
 
   test("returns false for plain text", () => {
     expect(
-      looksLikeMarkdown("This is just plain text without any markers."),
+      looksLikeMarkdown("This is just plain text without any markers.")
     ).toBe(false);
   });
 
@@ -199,5 +200,53 @@ describe("Markdown MIME type detection (conceptual)", () => {
 
   test("text/html is NOT explicit markdown MIME", () => {
     expect(isExplicitMarkdownMime("text/html")).toBe(false);
+  });
+});
+
+describe("WAL health assessment", () => {
+  test("assesses healthy WAL state", () => {
+    const result = assessWALHealth({
+      fileCount: 10,
+      totalSizeBytes: 1024 * 1024,
+    }); // 1MB
+    expect(result.healthy).toBe(true);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  test("warns when file count exceeds threshold", () => {
+    const result = assessWALHealth({
+      fileCount: 60,
+      totalSizeBytes: 1024 * 1024,
+    });
+    expect(result.healthy).toBe(false);
+    expect(result.warnings).toContain(
+      "WAL file count (60) exceeds recommended threshold (50)"
+    );
+  });
+
+  test("warns when total size exceeds threshold", () => {
+    const result = assessWALHealth({
+      fileCount: 10,
+      totalSizeBytes: 60 * 1024 * 1024,
+    }); // 60MB
+    expect(result.healthy).toBe(false);
+    expect(result.warnings).toContain(
+      "WAL size (60.0 MB) exceeds recommended threshold (50 MB)"
+    );
+  });
+
+  test("warns for both thresholds exceeded", () => {
+    const result = assessWALHealth({
+      fileCount: 100,
+      totalSizeBytes: 100 * 1024 * 1024,
+    });
+    expect(result.healthy).toBe(false);
+    expect(result.warnings).toHaveLength(2);
+  });
+
+  test("handles zero files gracefully", () => {
+    const result = assessWALHealth({ fileCount: 0, totalSizeBytes: 0 });
+    expect(result.healthy).toBe(true);
+    expect(result.warnings).toHaveLength(0);
   });
 });

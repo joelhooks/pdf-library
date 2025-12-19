@@ -4,7 +4,7 @@
  */
 
 import { Effect, Console } from "effect";
-import { mkdirSync, existsSync, readFileSync } from "fs";
+import { mkdirSync, existsSync, readFileSync, readdirSync, statSync } from "fs";
 import { basename, extname, join, dirname } from "path";
 import { fileURLToPath } from "url";
 
@@ -80,6 +80,48 @@ export function hasMarkdownExtension(url: string): boolean {
     // Fallback for malformed URLs
     return url.endsWith(".md") || url.endsWith(".markdown");
   }
+}
+
+/**
+ * WAL health assessment result
+ */
+export interface WALHealthResult {
+  healthy: boolean;
+  warnings: string[];
+}
+
+/**
+ * Assess WAL health based on file count and total size
+ * Thresholds: 50 files OR 50 MB
+ */
+export function assessWALHealth(stats: {
+  fileCount: number;
+  totalSizeBytes: number;
+}): WALHealthResult {
+  const warnings: string[] = [];
+  const FILE_COUNT_THRESHOLD = 50;
+  const SIZE_THRESHOLD_MB = 50;
+  const SIZE_THRESHOLD_BYTES = SIZE_THRESHOLD_MB * 1024 * 1024;
+
+  if (stats.fileCount > FILE_COUNT_THRESHOLD) {
+    warnings.push(
+      `WAL file count (${stats.fileCount}) exceeds recommended threshold (${FILE_COUNT_THRESHOLD})`
+    );
+  }
+
+  const sizeMB = stats.totalSizeBytes / (1024 * 1024);
+  if (stats.totalSizeBytes > SIZE_THRESHOLD_BYTES) {
+    warnings.push(
+      `WAL size (${sizeMB.toFixed(
+        1
+      )} MB) exceeds recommended threshold (${SIZE_THRESHOLD_MB} MB)`
+    );
+  }
+
+  return {
+    healthy: warnings.length === 0,
+    warnings,
+  };
 }
 
 /**
@@ -175,6 +217,9 @@ Commands:
                           Documents, chunks, embeddings count
 
   check                   Verify Ollama is running and model available
+
+  doctor                  Check WAL health and database status
+                          Warns if WAL files accumulate excessively
 
   repair                  Fix database integrity issues
                           Removes orphaned chunks/embeddings
@@ -442,6 +487,65 @@ const program = Effect.gen(function* () {
       break;
     }
 
+    case "doctor": {
+      const config = LibraryConfig.fromEnv();
+      const walPath = join(config.libraryPath, "library", "pg_wal");
+
+      yield* Console.log("Checking database health...\n");
+
+      // Check if WAL directory exists
+      if (!existsSync(walPath)) {
+        yield* Console.log(
+          "✓ WAL directory not found (database not initialized yet)"
+        );
+        break;
+      }
+
+      // Count WAL files and total size
+      const walFiles = readdirSync(walPath).filter(
+        (f) => !f.startsWith(".") // Ignore hidden files
+      );
+      const totalSizeBytes = walFiles.reduce((sum, file) => {
+        const filePath = join(walPath, file);
+        try {
+          return sum + statSync(filePath).size;
+        } catch {
+          return sum; // Skip files we can't read
+        }
+      }, 0);
+
+      const health = assessWALHealth({
+        fileCount: walFiles.length,
+        totalSizeBytes,
+      });
+
+      // Display stats
+      const sizeMB = (totalSizeBytes / (1024 * 1024)).toFixed(1);
+      yield* Console.log(`WAL Statistics:`);
+      yield* Console.log(`  Files:  ${walFiles.length}`);
+      yield* Console.log(`  Size:   ${sizeMB} MB`);
+      yield* Console.log(`  Path:   ${walPath}\n`);
+
+      if (health.healthy) {
+        yield* Console.log("✓ Database health is good");
+      } else {
+        yield* Console.log("⚠ Database health warnings:");
+        for (const warning of health.warnings) {
+          yield* Console.log(`  • ${warning}`);
+        }
+        yield* Console.log("\nRecommendations:");
+        yield* Console.log(
+          "  1. Run CHECKPOINT manually via your database connection"
+        );
+        yield* Console.log(
+          "  2. Consider export/import to compact the database:"
+        );
+        yield* Console.log("     pdf-brain export --output backup.tar.gz");
+        yield* Console.log("     pdf-brain import backup.tar.gz --force");
+      }
+      break;
+    }
+
     case "check": {
       yield* library.checkReady();
       yield* Console.log("✓ Ollama is ready");
@@ -583,6 +687,55 @@ const program = Effect.gen(function* () {
       process.exit(1);
   }
 });
+
+// ============================================================================
+// Graceful Shutdown Handlers
+// ============================================================================
+// MCP tool invocations are separate processes that may not cleanly close the
+// database. Register handlers early to ensure CHECKPOINT runs before exit.
+
+let isShuttingDown = false;
+
+async function gracefulShutdown(signal: string) {
+  if (isShuttingDown) return; // Prevent duplicate shutdowns
+  isShuttingDown = true;
+
+  console.error(`\n${signal} received, shutting down gracefully...`);
+
+  try {
+    // Import here to avoid circular dependencies
+    const { Database, DatabaseLive } = await import("./services/Database.js");
+    const { LibraryConfig } = await import("./types.js");
+
+    const config = LibraryConfig.fromEnv();
+    const dbDir = config.dbPath.replace(".db", "");
+
+    // Only run checkpoint if database exists
+    const { existsSync } = await import("fs");
+    if (existsSync(dbDir)) {
+      console.error("Running CHECKPOINT...");
+
+      const checkpointEffect = Effect.gen(function* () {
+        const db = yield* Database;
+        yield* db.checkpoint();
+      });
+
+      await Effect.runPromise(
+        checkpointEffect.pipe(Effect.provide(DatabaseLive))
+      );
+      console.error("✓ CHECKPOINT complete");
+    }
+  } catch (error) {
+    console.error(`Warning: Shutdown checkpoint failed: ${error}`);
+    // Don't block exit on checkpoint failure
+  }
+
+  process.exit(0);
+}
+
+// Register signal handlers
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 
 // Handle migrate command separately (doesn't need full PDFLibrary)
 const args = process.argv.slice(2);

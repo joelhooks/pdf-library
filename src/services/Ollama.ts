@@ -23,7 +23,7 @@ export class Ollama extends Context.Tag("Ollama")<
     readonly embed: (text: string) => Effect.Effect<number[], OllamaError>;
     readonly embedBatch: (
       texts: string[],
-      concurrency?: number,
+      concurrency?: number
     ) => Effect.Effect<number[][], OllamaError>;
     readonly checkHealth: () => Effect.Effect<void, OllamaError>;
   }
@@ -39,6 +39,51 @@ interface OllamaEmbeddingResponse {
 
 interface OllamaTagsResponse {
   models: Array<{ name: string }>;
+}
+
+/**
+ * Expected embedding dimension for nomic-embed-text model
+ */
+const EXPECTED_EMBEDDING_DIMENSION = 1024;
+
+/**
+ * Validates embedding dimensions and values before database insert
+ *
+ * Prevents "different vector dimensions 1024 and 0" errors that cause
+ * PGlite WAL accumulation and database corruption.
+ *
+ * @param embedding - The embedding vector to validate
+ * @returns Effect that fails with OllamaError if invalid
+ */
+function validateEmbedding(
+  embedding: number[]
+): Effect.Effect<number[], OllamaError> {
+  if (embedding.length === 0) {
+    return Effect.fail(
+      new OllamaError({
+        reason: `Invalid embedding: dimension 0 (expected ${EXPECTED_EMBEDDING_DIMENSION})`,
+      })
+    );
+  }
+
+  if (embedding.length !== EXPECTED_EMBEDDING_DIMENSION) {
+    return Effect.fail(
+      new OllamaError({
+        reason: `Invalid embedding: dimension ${embedding.length} (expected ${EXPECTED_EMBEDDING_DIMENSION})`,
+      })
+    );
+  }
+
+  if (embedding.some((v) => !Number.isFinite(v))) {
+    return Effect.fail(
+      new OllamaError({
+        reason:
+          "Invalid embedding: contains non-finite values (NaN or Infinity)",
+      })
+    );
+  }
+
+  return Effect.succeed(embedding);
 }
 
 export const OllamaLive = Layer.effect(
@@ -75,14 +120,15 @@ export const OllamaLive = Layer.effect(
           catch: () => new OllamaError({ reason: "Invalid JSON response" }),
         });
 
-        return data.embedding;
+        // Validate embedding before returning to prevent database corruption
+        return yield* validateEmbedding(data.embedding);
       }).pipe(
         // Retry with exponential backoff on transient failures
         Effect.retry(
           Schedule.exponential(Duration.millis(100)).pipe(
-            Schedule.compose(Schedule.recurs(3)),
-          ),
-        ),
+            Schedule.compose(Schedule.recurs(3))
+          )
+        )
       );
 
     return {
@@ -92,7 +138,7 @@ export const OllamaLive = Layer.effect(
         Stream.fromIterable(texts).pipe(
           Stream.mapEffect(embedSingle, { concurrency }),
           Stream.runCollect,
-          Effect.map(Chunk.toArray),
+          Effect.map(Chunk.toArray)
         ),
 
       checkHealth: () =>
@@ -107,7 +153,7 @@ export const OllamaLive = Layer.effect(
 
           if (!response.ok) {
             return yield* Effect.fail(
-              new OllamaError({ reason: "Ollama not responding" }),
+              new OllamaError({ reason: "Ollama not responding" })
             );
           }
 
@@ -120,17 +166,17 @@ export const OllamaLive = Layer.effect(
           const hasModel = data.models.some(
             (m) =>
               m.name === config.ollamaModel ||
-              m.name.startsWith(`${config.ollamaModel}:`),
+              m.name.startsWith(`${config.ollamaModel}:`)
           );
 
           if (!hasModel) {
             return yield* Effect.fail(
               new OllamaError({
                 reason: `Model ${config.ollamaModel} not found. Run: ollama pull ${config.ollamaModel}`,
-              }),
+              })
             );
           }
         }),
     };
-  }),
+  })
 );

@@ -30,21 +30,21 @@ export class Database extends Context.Tag("Database")<
   {
     // Document operations
     readonly addDocument: (
-      doc: PDFDocument,
+      doc: PDFDocument
     ) => Effect.Effect<void, DatabaseError>;
     readonly getDocument: (
-      id: string,
+      id: string
     ) => Effect.Effect<PDFDocument | null, DatabaseError>;
     readonly getDocumentByPath: (
-      path: string,
+      path: string
     ) => Effect.Effect<PDFDocument | null, DatabaseError>;
     readonly listDocuments: (
-      tag?: string,
+      tag?: string
     ) => Effect.Effect<PDFDocument[], DatabaseError>;
     readonly deleteDocument: (id: string) => Effect.Effect<void, DatabaseError>;
     readonly updateTags: (
       id: string,
-      tags: string[],
+      tags: string[]
     ) => Effect.Effect<void, DatabaseError>;
 
     // Chunk operations
@@ -55,27 +55,27 @@ export class Database extends Context.Tag("Database")<
         page: number;
         chunkIndex: number;
         content: string;
-      }>,
+      }>
     ) => Effect.Effect<void, DatabaseError>;
     readonly addEmbeddings: (
-      embeddings: Array<{ chunkId: string; embedding: number[] }>,
+      embeddings: Array<{ chunkId: string; embedding: number[] }>
     ) => Effect.Effect<void, DatabaseError>;
 
     // Search operations
     readonly vectorSearch: (
       embedding: number[],
-      options?: SearchOptions,
+      options?: SearchOptions
     ) => Effect.Effect<SearchResult[], DatabaseError>;
     readonly ftsSearch: (
       query: string,
-      options?: SearchOptions,
+      options?: SearchOptions
     ) => Effect.Effect<SearchResult[], DatabaseError>;
 
     // Context expansion
     readonly getExpandedContext: (
       docId: string,
       chunkIndex: number,
-      options?: { maxChars?: number; direction?: "before" | "after" | "both" },
+      options?: { maxChars?: number; direction?: "before" | "after" | "both" }
     ) => Effect.Effect<
       { content: string; startIndex: number; endIndex: number },
       DatabaseError
@@ -96,6 +96,9 @@ export class Database extends Context.Tag("Database")<
       },
       DatabaseError
     >;
+
+    // WAL management
+    readonly checkpoint: () => Effect.Effect<void, DatabaseError>;
   }
 >() {}
 
@@ -118,6 +121,8 @@ export const DatabaseLive = Layer.scoped(
     const pgDataDir = config.dbPath.replace(".db", "");
 
     // Initialize PGlite with pgvector extension (0.3.x API)
+    // Note: PGlite does not support PostgreSQL's max_wal_size configuration.
+    // WAL management is handled via explicit CHECKPOINT calls (see checkpoint() method).
     const db = new PGlite(pgDataDir, { extensions: { vector } });
     yield* Effect.tryPromise({
       try: () => db.waitReady,
@@ -180,10 +185,10 @@ export const DatabaseLive = Layer.scoped(
 
         // Other indexes
         await db.exec(
-          `CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id)`,
+          `CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id)`
         );
         await db.exec(
-          `CREATE INDEX IF NOT EXISTS idx_docs_path ON documents(path)`,
+          `CREATE INDEX IF NOT EXISTS idx_docs_path ON documents(path)`
         );
       },
       catch: (e) => new DatabaseError({ reason: `Schema init failed: ${e}` }),
@@ -193,7 +198,7 @@ export const DatabaseLive = Layer.scoped(
     yield* Effect.addFinalizer(() =>
       Effect.promise(async () => {
         await db.close();
-      }),
+      })
     );
 
     // Helper to parse document row
@@ -233,7 +238,7 @@ export const DatabaseLive = Layer.scoped(
                 doc.sizeBytes,
                 JSON.stringify(doc.tags),
                 JSON.stringify(doc.metadata || {}),
-              ],
+              ]
             );
           },
           catch: (e) => new DatabaseError({ reason: String(e) }),
@@ -244,7 +249,7 @@ export const DatabaseLive = Layer.scoped(
           try: async () => {
             const result = await db.query(
               "SELECT * FROM documents WHERE id = $1",
-              [id],
+              [id]
             );
             return result.rows.length > 0 ? parseDocRow(result.rows[0]) : null;
           },
@@ -256,7 +261,7 @@ export const DatabaseLive = Layer.scoped(
           try: async () => {
             const result = await db.query(
               "SELECT * FROM documents WHERE path = $1",
-              [path],
+              [path]
             );
             return result.rows.length > 0 ? parseDocRow(result.rows[0]) : null;
           },
@@ -318,7 +323,7 @@ export const DatabaseLive = Layer.scoped(
                     chunk.page,
                     chunk.chunkIndex,
                     chunk.content,
-                  ],
+                  ]
                 );
               }
               await db.exec("COMMIT");
@@ -341,7 +346,7 @@ export const DatabaseLive = Layer.scoped(
                 await db.query(
                   `INSERT INTO embeddings (chunk_id, embedding)
                    VALUES ($1, $2::vector)`,
-                  [item.chunkId, vectorStr],
+                  [item.chunkId, vectorStr]
                 );
               }
               await db.exec("COMMIT");
@@ -407,7 +412,7 @@ export const DatabaseLive = Layer.scoped(
                   content: row.content,
                   score: row.score,
                   matchType: "vector",
-                }),
+                })
             );
           },
           catch: (e) => new DatabaseError({ reason: String(e) }),
@@ -455,7 +460,7 @@ export const DatabaseLive = Layer.scoped(
                   content: row.content,
                   score: row.score,
                   matchType: "fts",
-                }),
+                })
             );
           },
           catch: (e) => new DatabaseError({ reason: String(e) }),
@@ -465,20 +470,20 @@ export const DatabaseLive = Layer.scoped(
         Effect.tryPromise({
           try: async () => {
             const docs = await db.query(
-              "SELECT COUNT(*) as count FROM documents",
+              "SELECT COUNT(*) as count FROM documents"
             );
             const chunks = await db.query(
-              "SELECT COUNT(*) as count FROM chunks",
+              "SELECT COUNT(*) as count FROM chunks"
             );
             const embeddings = await db.query(
-              "SELECT COUNT(*) as count FROM embeddings",
+              "SELECT COUNT(*) as count FROM embeddings"
             );
 
             return {
               documents: Number((docs.rows[0] as { count: number }).count),
               chunks: Number((chunks.rows[0] as { count: number }).count),
               embeddings: Number(
-                (embeddings.rows[0] as { count: number }).count,
+                (embeddings.rows[0] as { count: number }).count
               ),
             };
           },
@@ -494,7 +499,7 @@ export const DatabaseLive = Layer.scoped(
               WHERE NOT EXISTS (SELECT 1 FROM documents d WHERE d.id = c.doc_id)
             `);
             const orphanedChunks = Number(
-              (orphanedChunksResult.rows[0] as { count: number }).count,
+              (orphanedChunksResult.rows[0] as { count: number }).count
             );
 
             // Count orphaned embeddings (chunk_id not in chunks)
@@ -503,7 +508,7 @@ export const DatabaseLive = Layer.scoped(
               WHERE NOT EXISTS (SELECT 1 FROM chunks c WHERE c.id = e.chunk_id)
             `);
             const orphanedEmbeddings = Number(
-              (orphanedEmbeddingsResult.rows[0] as { count: number }).count,
+              (orphanedEmbeddingsResult.rows[0] as { count: number }).count
             );
 
             // Count zero-dimension embeddings (vector_dims returns 0 or null)
@@ -513,7 +518,7 @@ export const DatabaseLive = Layer.scoped(
               WHERE embedding IS NULL OR vector_dims(embedding) = 0
             `);
             const zeroVectorEmbeddings = Number(
-              (zeroVectorResult.rows[0] as { count: number }).count,
+              (zeroVectorResult.rows[0] as { count: number }).count
             );
 
             // Delete orphaned embeddings first (depends on chunks)
@@ -558,7 +563,7 @@ export const DatabaseLive = Layer.scoped(
             const targetResult = await db.query(
               `SELECT chunk_index, content FROM chunks 
                WHERE doc_id = $1 AND chunk_index = $2`,
-              [docId, chunkIndex],
+              [docId, chunkIndex]
             );
 
             if (targetResult.rows.length === 0) {
@@ -582,7 +587,7 @@ export const DatabaseLive = Layer.scoped(
                 const beforeResult = await db.query(
                   `SELECT chunk_index, content FROM chunks 
                    WHERE doc_id = $1 AND chunk_index = $2`,
-                  [docId, beforeIdx],
+                  [docId, beforeIdx]
                 );
                 if (beforeResult.rows.length === 0) break;
 
@@ -606,7 +611,7 @@ export const DatabaseLive = Layer.scoped(
                 const afterResult = await db.query(
                   `SELECT chunk_index, content FROM chunks 
                    WHERE doc_id = $1 AND chunk_index = $2`,
-                  [docId, afterIdx],
+                  [docId, afterIdx]
                 );
                 if (afterResult.rows.length === 0) break;
 
@@ -631,6 +636,17 @@ export const DatabaseLive = Layer.scoped(
           },
           catch: (e) => new DatabaseError({ reason: String(e) }),
         }),
+
+      checkpoint: () =>
+        Effect.tryPromise({
+          try: async () => {
+            // Force PGlite to write WAL to data files
+            // This prevents WAL accumulation that can cause WASM OOM
+            await db.exec("CHECKPOINT");
+          },
+          catch: (e) =>
+            new DatabaseError({ reason: `Checkpoint failed: ${e}` }),
+        }),
     };
-  }),
+  })
 );

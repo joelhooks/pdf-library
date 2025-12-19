@@ -88,7 +88,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
               new DocumentExistsError({
                 title: existing.title,
                 path: resolvedPath,
-              }),
+              })
             );
           }
 
@@ -114,7 +114,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
           } else if (isMarkdown) {
             // For markdown: try frontmatter title, then first H1, then filename
             const frontmatterResult = yield* Effect.either(
-              markdownExtractor.extractFrontmatter(resolvedPath),
+              markdownExtractor.extractFrontmatter(resolvedPath)
             );
 
             if (
@@ -126,14 +126,14 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
             } else {
               // Try first H1 from sections
               const extractResult = yield* Effect.either(
-                markdownExtractor.extract(resolvedPath),
+                markdownExtractor.extract(resolvedPath)
               );
               if (
                 extractResult._tag === "Right" &&
                 extractResult.right.sections.length > 0
               ) {
                 const firstH1 = extractResult.right.sections.find(
-                  (s) => s.heading,
+                  (s) => s.heading
                 );
                 title =
                   firstH1?.heading ||
@@ -157,11 +157,11 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
 
           if (isMarkdown) {
             const processResult = yield* Effect.either(
-              markdownExtractor.process(resolvedPath),
+              markdownExtractor.process(resolvedPath)
             );
             if (processResult._tag === "Left") {
               yield* Effect.log(
-                `Markdown extraction failed for ${resolvedPath}: ${processResult.left}`,
+                `Markdown extraction failed for ${resolvedPath}: ${processResult.left}`
               );
               return yield* Effect.fail(processResult.left);
             }
@@ -169,11 +169,11 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
             chunks = processResult.right.chunks;
           } else {
             const processResult = yield* Effect.either(
-              pdfExtractor.process(resolvedPath),
+              pdfExtractor.process(resolvedPath)
             );
             if (processResult._tag === "Left") {
               yield* Effect.log(
-                `PDF extraction failed for ${resolvedPath}: ${processResult.left}`,
+                `PDF extraction failed for ${resolvedPath}: ${processResult.left}`
               );
               return yield* Effect.fail(processResult.left);
             }
@@ -185,7 +185,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
             return yield* Effect.fail(
               new DocumentNotFoundError({
                 query: `No text content extracted from ${fileType}`,
-              }),
+              })
             );
           }
 
@@ -217,7 +217,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
 
           // Generate embeddings with progress
           yield* Effect.log(
-            `Generating embeddings for ${chunks.length} chunks...`,
+            `Generating embeddings for ${chunks.length} chunks...`
           );
           const contents = chunks.map((c) => c.content);
           const embeddings = yield* ollama.embedBatch(contents, 5);
@@ -228,6 +228,9 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
             embedding: emb,
           }));
           yield* db.addEmbeddings(embeddingRecords);
+
+          // Force checkpoint to prevent WAL accumulation
+          yield* db.checkpoint();
 
           return doc;
         }),
@@ -246,7 +249,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
             const queryEmbedding = yield* ollama.embed(query);
             const vectorResults = yield* db.vectorSearch(
               queryEmbedding,
-              options,
+              options
             );
             results.push(...vectorResults);
           }
@@ -261,7 +264,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
                 (r) =>
                   r.docId === fts.docId &&
                   r.page === fts.page &&
-                  r.chunkIndex === fts.chunkIndex,
+                  r.chunkIndex === fts.chunkIndex
               );
               if (!exists) {
                 results.push(fts);
@@ -319,7 +322,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
                   const expanded = yield* db.getExpandedContext(
                     result.docId,
                     result.chunkIndex,
-                    { maxChars: expandChars },
+                    { maxChars: expandChars }
                   );
 
                   // Cache for deduplication
@@ -337,8 +340,8 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
                       end: expanded.endIndex,
                     },
                   });
-                }),
-              ),
+                })
+              )
             );
           }
 
@@ -350,7 +353,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
        */
       ftsSearch: (
         query: string,
-        options: SearchOptions = new SearchOptions({}),
+        options: SearchOptions = new SearchOptions({})
       ) => db.ftsSearch(query, options),
 
       /**
@@ -373,7 +376,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
             docs.find(
               (d) =>
                 d.title.toLowerCase().includes(idOrTitle.toLowerCase()) ||
-                d.id.startsWith(idOrTitle),
+                d.id.startsWith(idOrTitle)
             ) || null
           );
         }),
@@ -393,15 +396,15 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
                 docs.find(
                   (d) =>
                     d.title.toLowerCase().includes(id.toLowerCase()) ||
-                    d.id.startsWith(id),
+                    d.id.startsWith(id)
                 ) || null
               );
-            }),
+            })
           );
 
           if (!doc) {
             return yield* Effect.fail(
-              new DocumentNotFoundError({ query: idOrTitle }),
+              new DocumentNotFoundError({ query: idOrTitle })
             );
           }
 
@@ -424,15 +427,15 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
                 docs.find(
                   (d) =>
                     d.title.toLowerCase().includes(id.toLowerCase()) ||
-                    d.id.startsWith(id),
+                    d.id.startsWith(id)
                 ) || null
               );
-            }),
+            })
           );
 
           if (!doc) {
             return yield* Effect.fail(
-              new DocumentNotFoundError({ query: idOrTitle }),
+              new DocumentNotFoundError({ query: idOrTitle })
             );
           }
 
