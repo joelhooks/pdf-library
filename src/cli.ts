@@ -13,6 +13,12 @@ import {
   isDaemonRunning,
   DaemonConfig,
 } from "./services/Daemon.js";
+import {
+  renderIngestProgress,
+  createInitialState,
+  type FileStatus,
+  type IngestState,
+} from "./components/IngestProgress.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(
@@ -234,6 +240,12 @@ Commands:
   daemon stop             Stop daemon gracefully
   daemon status           Show daemon running status
 
+  ingest <directory>      Batch ingest PDFs/Markdown from directory
+    --recursive           Include subdirectories (default: true)
+    --tags <tags>         Apply tags to all ingested files
+    --sample <n>          Process only first N files (for testing)
+    --no-tui              Disable TUI, use simple progress output
+
   export                  Export library for backup or sharing
     --output <path>       Output file (default: ./pdf-brain-export.tar.gz)
 
@@ -256,6 +268,8 @@ Examples:
   pdf-brain search "machine learning" --limit 5
   pdf-brain search "error handling" --expand 2000
   pdf-brain stats
+  pdf-brain ingest ~/Documents/books --tags "books"
+  pdf-brain ingest ./papers --sample 5 --no-tui
 `;
 
 function parseArgs(args: string[]) {
@@ -688,6 +702,210 @@ const program = Effect.gen(function* () {
 
       yield* Console.log(`\n✓ Library imported successfully`);
       yield* Console.log(`\nRun 'pdf-brain stats' to verify`);
+      break;
+    }
+
+    case "ingest": {
+      const directory = args[1];
+      if (!directory) {
+        yield* Console.error("Error: Directory required");
+        yield* Console.error("Usage: pdf-brain ingest <directory> [options]");
+        process.exit(1);
+      }
+
+      // Resolve to absolute path
+      const targetDir = directory.startsWith("/")
+        ? directory
+        : join(process.cwd(), directory);
+
+      if (!existsSync(targetDir)) {
+        yield* Console.error(`Error: Directory not found: ${targetDir}`);
+        process.exit(1);
+      }
+
+      const dirStat = statSync(targetDir);
+      if (!dirStat.isDirectory()) {
+        yield* Console.error(`Error: Not a directory: ${targetDir}`);
+        process.exit(1);
+      }
+
+      const opts = parseArgs(args.slice(2));
+      const recursive = opts.recursive !== false; // default true
+      const tags = opts.tags
+        ? (opts.tags as string).split(",").map((t) => t.trim())
+        : undefined;
+      const sampleSize = opts.sample
+        ? parseInt(opts.sample as string, 10)
+        : undefined;
+      const useTui = opts["no-tui"] !== true;
+
+      // Discover files
+      yield* Console.log(`Scanning ${targetDir}...`);
+
+      const discoverFiles = (dir: string): string[] => {
+        const files: string[] = [];
+        const entries = readdirSync(dir);
+
+        for (const entry of entries) {
+          const fullPath = join(dir, entry);
+          try {
+            const stat = statSync(fullPath);
+            if (stat.isDirectory() && recursive) {
+              files.push(...discoverFiles(fullPath));
+            } else if (stat.isFile()) {
+              const ext = extname(entry).toLowerCase();
+              if (ext === ".pdf" || ext === ".md" || ext === ".markdown") {
+                files.push(fullPath);
+              }
+            }
+          } catch {
+            // Skip files we can't access
+          }
+        }
+        return files;
+      };
+
+      let files = discoverFiles(targetDir);
+      yield* Console.log(`Found ${files.length} files`);
+
+      if (files.length === 0) {
+        yield* Console.log("No PDF or Markdown files found");
+        break;
+      }
+
+      // Apply sample limit if specified
+      if (sampleSize && sampleSize < files.length) {
+        files = files.slice(0, sampleSize);
+        yield* Console.log(`Processing sample of ${sampleSize} files`);
+      }
+
+      // Check what's already in the library to skip duplicates
+      const existingDocs = yield* library.list();
+      const existingPaths = new Set(existingDocs.map((d) => d.path));
+      const newFiles = files.filter((f) => !existingPaths.has(f));
+
+      if (newFiles.length < files.length) {
+        yield* Console.log(
+          `Skipping ${files.length - newFiles.length} already-ingested files`
+        );
+      }
+
+      if (newFiles.length === 0) {
+        yield* Console.log("All files already ingested");
+        break;
+      }
+
+      files = newFiles;
+
+      // Check if we can use TUI (requires TTY)
+      const canUseTui = useTui && process.stdout.isTTY && process.stdin.isTTY;
+      if (useTui && !canUseTui) {
+        yield* Console.log("TUI disabled (not a TTY), using simple output");
+      }
+
+      // Process files
+      if (canUseTui) {
+        // TUI mode
+        const state = createInitialState();
+        state.totalFiles = files.length;
+        state.phase = "processing";
+
+        const tui = renderIngestProgress(state);
+
+        try {
+          for (let i = 0; i < files.length; i++) {
+            if (tui.isCancelled()) {
+              tui.cleanup();
+              yield* Console.log("\nIngestion cancelled by user");
+              break;
+            }
+
+            const filePath = files[i];
+            const filename = basename(filePath);
+
+            const currentFile: FileStatus = {
+              path: filePath,
+              filename,
+              status: "chunking",
+            };
+
+            tui.update({ currentFile });
+
+            try {
+              // Add the file
+              const doc = yield* library.add(
+                filePath,
+                new AddOptions({ tags })
+              );
+
+              currentFile.status = "done";
+              currentFile.chunks = doc.pageCount; // Approximate
+
+              tui.update({
+                processedFiles: i + 1,
+                currentFile,
+                recentFiles: [...tui.getState().recentFiles, currentFile],
+              });
+            } catch (error) {
+              currentFile.status = "error";
+              currentFile.error =
+                error instanceof Error ? error.message : String(error);
+
+              tui.update({
+                processedFiles: i + 1,
+                currentFile,
+                recentFiles: [...tui.getState().recentFiles, currentFile],
+                errors: [...tui.getState().errors, currentFile],
+              });
+            }
+          }
+
+          tui.update({ phase: "done", endTime: Date.now() });
+
+          // Wait a moment for user to see final state
+          yield* Effect.sleep("2 seconds");
+          tui.cleanup();
+
+          const finalState = tui.getState();
+          yield* Console.log(
+            `\n✓ Ingested ${
+              finalState.processedFiles - finalState.errors.length
+            } files`
+          );
+          if (finalState.errors.length > 0) {
+            yield* Console.log(`⚠ ${finalState.errors.length} files failed`);
+          }
+        } catch (error) {
+          tui.cleanup();
+          throw error;
+        }
+      } else {
+        // Simple console mode
+        let processed = 0;
+        let errors = 0;
+
+        for (const filePath of files) {
+          const filename = basename(filePath);
+          processed++;
+
+          try {
+            yield* Console.log(
+              `[${processed}/${files.length}] Adding: ${filename}`
+            );
+            const doc = yield* library.add(filePath, new AddOptions({ tags }));
+            yield* Console.log(`  ✓ ${doc.title} (${doc.pageCount} pages)`);
+          } catch (error) {
+            errors++;
+            const msg = error instanceof Error ? error.message : String(error);
+            yield* Console.error(`  ✗ Failed: ${msg}`);
+          }
+        }
+
+        yield* Console.log(`\n✓ Ingested ${processed - errors} files`);
+        if (errors > 0) {
+          yield* Console.log(`⚠ ${errors} files failed`);
+        }
+      }
       break;
     }
 

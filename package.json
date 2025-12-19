@@ -1,6 +1,6 @@
 {
   "name": "pdf-brain",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Local PDF knowledge base with vector search",
   "type": "module",
   "main": "src/index.ts",
@@ -27,8 +27,11 @@
     "@types/pg": "^8.16.0",
     "effect": "^3.12.0",
     "gray-matter": "^4.0.3",
+    "ink": "^6.5.1",
+    "ink-spinner": "^5.0.0",
     "mdast-util-to-string": "^4.0.0",
     "pg": "^8.16.3",
+    "react": "^19.2.3",
     "remark-frontmatter": "^5.0.0",
     "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",
@@ -39,6 +42,7 @@
     "@changesets/cli": "^2.29.8",
     "@types/bun": "latest",
     "@types/mdast": "^4.0.4",
+    "@types/react": "^19.2.7",
     "typescript": "^5.7.2"
   },
   "peerDependencies": {
