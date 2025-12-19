@@ -474,8 +474,10 @@ export class LibSQLDatabase {
           checkpoint: () =>
             Effect.tryPromise({
               try: async () => {
-                // LibSQL syncs automatically, but we can force a sync
-                await client.sync();
+                // LibSQL file DBs auto-sync via WAL, no explicit checkpoint needed
+                // client.sync() is only for Turso remote replication
+                // Just run a PRAGMA to ensure WAL is flushed
+                await client.execute("PRAGMA wal_checkpoint(TRUNCATE)");
               },
               catch: (e) =>
                 new DatabaseError({ reason: `Checkpoint failed: ${e}` }),
