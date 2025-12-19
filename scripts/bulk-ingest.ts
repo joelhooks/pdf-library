@@ -5,7 +5,7 @@
  * Pass multiple directories, processes them all in one go.
  */
 
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Logger, LogLevel } from "effect";
 import { existsSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import {
@@ -283,6 +283,11 @@ const program = Effect.gen(function* () {
   }
 });
 
-// Run
+// Run with Effect logging suppressed (we do our own progress output)
 const AppLayer = PDFLibraryLive.pipe(Layer.provideMerge(AutoTaggerLive));
-Effect.runPromise(program.pipe(Effect.provide(AppLayer))).catch(console.error);
+Effect.runPromise(
+  program.pipe(
+    Effect.provide(AppLayer),
+    Logger.withMinimumLogLevel(LogLevel.None)
+  )
+).catch(console.error);
