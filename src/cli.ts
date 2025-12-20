@@ -40,6 +40,12 @@ import {
   URLFetchError,
 } from "./index.js";
 import { Migration, MigrationLive } from "./services/Migration.js";
+import {
+  TaxonomyService,
+  TaxonomyServiceImpl,
+  type TaxonomyJSON,
+  type Concept,
+} from "./services/TaxonomyService.js";
 
 /**
  * Check if a string is a URL
@@ -235,6 +241,89 @@ export function assessDoctorHealth(data: {
 }
 
 /**
+ * Build a hierarchy tree from concepts
+ * Returns Map of conceptId -> { concept, children }
+ */
+interface TreeNode {
+  concept: Concept;
+  children: TreeNode[];
+}
+
+/**
+ * Render a concept tree with box-drawing characters
+ */
+function renderConceptTree(
+  node: TreeNode,
+  prefix = "",
+  isLast = true
+): string[] {
+  const lines: string[] = [];
+  const connector = isLast ? "└── " : "├── ";
+  const childPrefix = isLast ? "    " : "│   ";
+
+  lines.push(prefix + connector + node.concept.prefLabel);
+
+  for (let i = 0; i < node.children.length; i++) {
+    const child = node.children[i];
+    const childIsLast = i === node.children.length - 1;
+    lines.push(...renderConceptTree(child, prefix + childPrefix, childIsLast));
+  }
+
+  return lines;
+}
+
+/**
+ * Build tree structure from flat list of concepts with hierarchy
+ */
+async function buildTreeStructure(
+  taxonomy: TaxonomyService,
+  rootId?: string
+): Promise<TreeNode[]> {
+  const concepts = await Effect.runPromise(taxonomy.listConcepts());
+  const conceptMap = new Map(concepts.map((c) => [c.id, c]));
+
+  // Build parent-child relationships
+  const childrenMap = new Map<string, string[]>();
+  const roots: string[] = [];
+
+  for (const concept of concepts) {
+    const broaders = await Effect.runPromise(taxonomy.getBroader(concept.id));
+    if (broaders.length === 0) {
+      roots.push(concept.id);
+    } else {
+      for (const broader of broaders) {
+        if (!childrenMap.has(broader.id)) {
+          childrenMap.set(broader.id, []);
+        }
+        childrenMap.get(broader.id)!.push(concept.id);
+      }
+    }
+  }
+
+  // Build tree nodes recursively
+  const buildNode = (conceptId: string): TreeNode | null => {
+    const concept = conceptMap.get(conceptId);
+    if (!concept) return null;
+
+    const childIds = childrenMap.get(conceptId) || [];
+    const children = childIds
+      .map(buildNode)
+      .filter((n): n is TreeNode => n !== null);
+
+    return { concept, children };
+  };
+
+  // If rootId specified, build from that node
+  if (rootId) {
+    const node = buildNode(rootId);
+    return node ? [node] : [];
+  }
+
+  // Otherwise, build all root nodes
+  return roots.map(buildNode).filter((n): n is TreeNode => n !== null);
+}
+
+/**
  * Get checkpoint interval from CLI options
  * Default is 50 documents
  */
@@ -379,6 +468,27 @@ Commands:
     --check               Check if migration is needed
     --import <file>       Import from SQL dump
     --generate-script     Generate export script for current DB
+
+  taxonomy list           List all concepts
+    --tree                Show hierarchy tree
+    --format <fmt>        Output format: json|table (default: table)
+
+  taxonomy tree [id]      Show visual concept tree (box-drawing)
+                          If id provided, shows subtree from that concept
+
+  taxonomy add <id>       Add a new concept
+    --label <label>       Preferred label (required)
+    --broader <parent>    Parent concept ID
+    --definition <text>   Concept definition
+
+  taxonomy assign <doc-id> <concept-id>
+                          Assign concept to document
+    --confidence <0-1>    Confidence score (default: 1.0)
+
+  taxonomy search <query> Find concepts by label/altLabel
+
+  taxonomy seed           Load taxonomy from JSON file
+    --file <path>         JSON file path (default: data/taxonomy.json)
 
 Options:
   --help, -h              Show this help
@@ -1309,10 +1419,233 @@ async function gracefulShutdown(signal: string) {
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 
-// Handle migrate command separately (don't need full PDFLibrary)
+// Handle taxonomy command separately (don't need full PDFLibrary)
 const args = process.argv.slice(2);
 
-if (args[0] === "migrate") {
+if (args[0] === "taxonomy") {
+  const taxonomyProgram = Effect.gen(function* () {
+    const subcommand = args[1];
+    const opts = parseArgs(args.slice(2));
+    const config = LibraryConfig.fromEnv();
+    const taxonomy = yield* TaxonomyService;
+
+    switch (subcommand) {
+      case "list": {
+        const concepts = yield* taxonomy.listConcepts();
+
+        const formatOpt = (opts.format as string) || "table";
+
+        if (formatOpt === "json") {
+          yield* Console.log(JSON.stringify(concepts, null, 2));
+        } else if (opts.tree) {
+          // Tree view
+          const trees = yield* Effect.promise(() =>
+            buildTreeStructure(taxonomy)
+          );
+          if (trees.length === 0) {
+            yield* Console.log("No concepts found");
+          } else {
+            for (const tree of trees) {
+              const lines = renderConceptTree(tree, "", true);
+              for (const line of lines) {
+                yield* Console.log(line);
+              }
+            }
+          }
+        } else {
+          // Table view
+          if (concepts.length === 0) {
+            yield* Console.log("No concepts found");
+          } else {
+            yield* Console.log(`Concepts: ${concepts.length}\n`);
+            for (const concept of concepts) {
+              yield* Console.log(`• ${concept.prefLabel} (${concept.id})`);
+              if (concept.definition) {
+                yield* Console.log(`  ${concept.definition}`);
+              }
+            }
+          }
+        }
+        break;
+      }
+
+      case "tree": {
+        const conceptId = args[2];
+        const trees = yield* Effect.promise(() =>
+          buildTreeStructure(taxonomy, conceptId)
+        );
+
+        if (trees.length === 0) {
+          yield* Console.log(
+            conceptId ? `Concept not found: ${conceptId}` : "No concepts found"
+          );
+        } else {
+          for (const tree of trees) {
+            const lines = renderConceptTree(tree, "", true);
+            for (const line of lines) {
+              yield* Console.log(line);
+            }
+          }
+        }
+        break;
+      }
+
+      case "add": {
+        const id = args[2];
+        const label = opts.label as string | undefined;
+
+        if (!id || !label) {
+          yield* Console.error("Error: ID and --label required");
+          yield* Console.error(
+            "Usage: pdf-brain taxonomy add <id> --label <label> [--broader <parent>] [--definition <text>]"
+          );
+          process.exit(1);
+        }
+
+        const altLabels: string[] = [];
+        const definition = opts.definition as string | undefined;
+
+        yield* taxonomy.addConcept({
+          id,
+          prefLabel: label,
+          altLabels,
+          definition,
+        });
+
+        if (opts.broader) {
+          yield* taxonomy.addBroader(id, opts.broader as string);
+        }
+
+        yield* Console.log(`✓ Added concept: ${label} (${id})`);
+        if (opts.broader) {
+          yield* Console.log(`  Parent: ${opts.broader}`);
+        }
+        break;
+      }
+
+      case "assign": {
+        const docId = args[2];
+        const conceptId = args[3];
+
+        if (!docId || !conceptId) {
+          yield* Console.error("Error: Document ID and Concept ID required");
+          yield* Console.error(
+            "Usage: pdf-brain taxonomy assign <doc-id> <concept-id> [--confidence 0.9]"
+          );
+          process.exit(1);
+        }
+
+        const confidence = opts.confidence
+          ? parseFloat(opts.confidence as string)
+          : 1.0;
+
+        yield* taxonomy.assignToDocument(
+          docId,
+          conceptId,
+          confidence,
+          "manual"
+        );
+        yield* Console.log(
+          `✓ Assigned concept ${conceptId} to document ${docId}`
+        );
+        if (confidence !== 1.0) {
+          yield* Console.log(`  Confidence: ${confidence}`);
+        }
+        break;
+      }
+
+      case "search": {
+        const query = args[2];
+        if (!query) {
+          yield* Console.error("Error: Query required");
+          yield* Console.error("Usage: pdf-brain taxonomy search <query>");
+          process.exit(1);
+        }
+
+        const concepts = yield* taxonomy.listConcepts();
+        const queryLower = query.toLowerCase();
+
+        const matches = concepts.filter(
+          (c) =>
+            c.prefLabel.toLowerCase().includes(queryLower) ||
+            c.altLabels.some((alt) => alt.toLowerCase().includes(queryLower))
+        );
+
+        if (matches.length === 0) {
+          yield* Console.log(`No concepts matching "${query}"`);
+        } else {
+          yield* Console.log(`Found ${matches.length} matches:\n`);
+          for (const concept of matches) {
+            yield* Console.log(`• ${concept.prefLabel} (${concept.id})`);
+            if (concept.definition) {
+              yield* Console.log(`  ${concept.definition}`);
+            }
+          }
+        }
+        break;
+      }
+
+      case "seed": {
+        const filePath = (opts.file as string) || "data/taxonomy.json";
+
+        if (!existsSync(filePath)) {
+          yield* Console.error(`Error: File not found: ${filePath}`);
+          process.exit(1);
+        }
+
+        const fileContent = readFileSync(filePath, "utf-8");
+        const taxonomyData = JSON.parse(fileContent) as TaxonomyJSON;
+
+        yield* taxonomy.seedFromJSON(taxonomyData);
+
+        const conceptCount = taxonomyData.concepts.length;
+        const hierarchyCount = taxonomyData.hierarchy?.length || 0;
+        const relationsCount = taxonomyData.relations?.length || 0;
+
+        yield* Console.log(`✓ Loaded taxonomy from ${filePath}`);
+        yield* Console.log(`  Concepts: ${conceptCount}`);
+        if (hierarchyCount > 0) {
+          yield* Console.log(`  Hierarchy relations: ${hierarchyCount}`);
+        }
+        if (relationsCount > 0) {
+          yield* Console.log(`  Related relations: ${relationsCount}`);
+        }
+        break;
+      }
+
+      default:
+        yield* Console.error(`Unknown taxonomy subcommand: ${subcommand}`);
+        yield* Console.error(
+          "Run 'pdf-brain --help' to see available commands"
+        );
+        process.exit(1);
+    }
+  });
+
+  // Create TaxonomyService layer with same DB as PDFLibrary
+  const config = LibraryConfig.fromEnv();
+  const TaxonomyServiceLive = TaxonomyServiceImpl.make({
+    url: `file:${config.dbPath}`,
+  });
+
+  Effect.runPromise(
+    taxonomyProgram.pipe(
+      Effect.provide(TaxonomyServiceLive),
+      Effect.catchAll((error) =>
+        Effect.gen(function* () {
+          if (error._tag === "TaxonomyError") {
+            yield* Console.error(`Taxonomy Error: ${error.reason}`);
+          } else {
+            yield* Console.error(
+              `Error: ${error._tag}: ${JSON.stringify(error)}`
+            );
+          }
+          process.exit(1);
+        })
+      )
+    )
+  );
+} else if (args[0] === "migrate") {
   const migrateProgram = Effect.gen(function* () {
     const opts = parseArgs(args.slice(1));
     const migration = yield* Migration;

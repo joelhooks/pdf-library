@@ -102,7 +102,7 @@ export class LibraryConfig extends Schema.Class<LibraryConfig>("LibraryConfig")(
 export class SearchOptions extends Schema.Class<SearchOptions>("SearchOptions")(
   {
     limit: Schema.optionalWith(Schema.Number, { default: () => 10 }),
-    threshold: Schema.optionalWith(Schema.Number, { default: () => 0.3 }),
+    threshold: Schema.optionalWith(Schema.Number, { default: () => 0.0 }),
     tags: Schema.optional(Schema.Array(Schema.String)),
     hybrid: Schema.optionalWith(Schema.Boolean, { default: () => true }),
     /** Max chars for expanded context per result. 0 = no expansion (default) */

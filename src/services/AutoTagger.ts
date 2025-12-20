@@ -37,6 +37,21 @@ export type DocumentType =
   | "notes"
   | "other";
 
+/** Taxonomy concept (minimal interface for AutoTagger) */
+export interface TaxonomyConcept {
+  id: string;
+  prefLabel: string;
+  altLabels: string[];
+}
+
+/** Proposed new concept from LLM */
+export interface ProposedConcept {
+  id: string;
+  prefLabel: string;
+  altLabels?: string[];
+  definition?: string;
+}
+
 /** Full enrichment result */
 export interface EnrichmentResult {
   /** Clean, properly formatted title */
@@ -49,8 +64,12 @@ export interface EnrichmentResult {
   documentType: DocumentType;
   /** Primary category */
   category: string;
-  /** Semantic tags (5-10) */
+  /** Semantic tags (5-10) - DEPRECATED: use concepts instead */
   tags: string[];
+  /** Matched concept IDs from taxonomy */
+  concepts: string[];
+  /** Proposed new concepts to add to taxonomy */
+  proposedConcepts?: ProposedConcept[];
   /** Confidence score 0-1 */
   confidence: number;
   /** Which provider was used */
@@ -85,6 +104,8 @@ export interface EnrichmentOptions {
   heuristicsOnly?: boolean;
   /** Base path to strip from path-based tags */
   basePath?: string;
+  /** Available taxonomy concepts for concept-based tagging */
+  availableConcepts?: TaxonomyConcept[];
 }
 
 // ============================================================================
@@ -240,6 +261,17 @@ const AUTHOR_PATTERNS = [
 // Schemas
 // ============================================================================
 
+/** Schema for proposed concepts */
+const ProposedConceptSchema = z.object({
+  id: z.string().describe("Suggested concept ID (e.g., 'programming/rust')"),
+  prefLabel: z.string().describe("Preferred label"),
+  altLabels: z
+    .array(z.string())
+    .optional()
+    .describe("Alternative labels/aliases"),
+  definition: z.string().optional().describe("Definition/description"),
+});
+
 /** Schema for full enrichment */
 const EnrichmentSchema = z.object({
   title: z.string().describe("Clean, properly formatted document title"),
@@ -262,7 +294,16 @@ const EnrichmentSchema = z.object({
   category: z
     .string()
     .describe("Primary category (e.g., programming, business, design)"),
-  tags: z.array(z.string()).min(3).max(10).describe("5-10 descriptive tags"),
+  tags: z
+    .array(z.string())
+    .min(3)
+    .max(10)
+    .describe("5-10 descriptive tags (DEPRECATED: use concepts)"),
+  concepts: z.array(z.string()).describe("Matched concept IDs from taxonomy"),
+  proposedConcepts: z
+    .array(ProposedConceptSchema)
+    .optional()
+    .describe("New concepts to add to taxonomy"),
 });
 
 /** Schema for lightweight tagging */
@@ -519,6 +560,25 @@ function parseJSONFromText(text: string): unknown {
 }
 
 /**
+ * Format concepts for LLM prompt
+ */
+function formatConceptsForPrompt(concepts: TaxonomyConcept[]): string {
+  if (concepts.length === 0) {
+    return "No taxonomy concepts available yet.";
+  }
+
+  const lines = concepts.map((c) => {
+    const aliases =
+      c.altLabels.length > 0 ? ` (aliases: ${c.altLabels.join(", ")})` : "";
+    return `- ${c.id}: ${c.prefLabel}${aliases}`;
+  });
+
+  return `Available concepts (use these IDs when applicable):\n${lines.join(
+    "\n"
+  )}`;
+}
+
+/**
  * Generate full enrichment using LLM
  * Uses generateText for better compatibility with local models
  */
@@ -526,9 +586,11 @@ async function enrichWithLLM(
   filename: string,
   content: string,
   provider: LLMProvider,
+  availableConcepts: TaxonomyConcept[] = [],
   model?: string
 ): Promise<Omit<EnrichmentResult, "provider" | "confidence">> {
   const truncatedContent = content.slice(0, 6000);
+  const conceptsList = formatConceptsForPrompt(availableConcepts);
 
   // For Anthropic, use structured output
   if (provider === "anthropic") {
@@ -542,7 +604,14 @@ Filename: ${filename}
 Content (excerpt):
 ${truncatedContent}
 
-Extract: title, author (if present), summary (2-3 sentences), documentType (book/paper/tutorial/reference/guide/article/report/presentation/notes/other), category, and 5-10 tags.`,
+${conceptsList}
+
+Extract:
+- title, author (if present), summary (2-3 sentences)
+- documentType (book/paper/tutorial/reference/guide/article/report/presentation/notes/other)
+- category, tags (5-10 descriptive tags for backward compatibility)
+- concepts: array of concept IDs from the available concepts above that match this document's topics
+- proposedConcepts: if the document covers topics NOT in the taxonomy, suggest new concepts to add (with id, prefLabel, optional altLabels/definition)`,
     });
 
     return {
@@ -552,6 +621,8 @@ Extract: title, author (if present), summary (2-3 sentences), documentType (book
       documentType: object.documentType,
       category: normalizeTag(object.category),
       tags: object.tags.map(normalizeTag).filter((t) => t.length >= 2),
+      concepts: object.concepts,
+      proposedConcepts: object.proposedConcepts,
     };
   }
 
@@ -565,6 +636,8 @@ Filename: ${filename}
 Content (excerpt):
 ${truncatedContent}
 
+${conceptsList}
+
 Return ONLY a JSON object with these fields:
 {
   "title": "Clean document title",
@@ -572,10 +645,15 @@ Return ONLY a JSON object with these fields:
   "summary": "2-3 sentence summary",
   "documentType": "book|paper|tutorial|reference|guide|article|report|presentation|notes|other",
   "category": "primary-category",
-  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"]
+  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
+  "concepts": ["concept-id-1", "concept-id-2"],
+  "proposedConcepts": [{"id": "new/concept", "prefLabel": "New Concept", "altLabels": ["alias1"], "definition": "Description"}]
 }
 
-Use lowercase hyphenated tags. Be specific, avoid generic terms.`,
+Rules:
+- Use lowercase hyphenated tags. Be specific, avoid generic terms.
+- Match existing concept IDs from the list above when applicable
+- Propose new concepts if the document covers topics not in the taxonomy`,
   });
 
   const parsed = parseJSONFromText(text) as {
@@ -585,6 +663,8 @@ Use lowercase hyphenated tags. Be specific, avoid generic terms.`,
     documentType?: string;
     category?: string;
     tags?: string[];
+    concepts?: string[];
+    proposedConcepts?: ProposedConcept[];
   };
 
   return {
@@ -594,6 +674,8 @@ Use lowercase hyphenated tags. Be specific, avoid generic terms.`,
     documentType: (parsed.documentType as DocumentType) || "other",
     category: normalizeTag(parsed.category || "uncategorized"),
     tags: (parsed.tags || []).map(normalizeTag).filter((t) => t.length >= 2),
+    concepts: parsed.concepts || [],
+    proposedConcepts: parsed.proposedConcepts,
   };
 }
 
@@ -711,6 +793,7 @@ export const AutoTaggerLive = Layer.succeed(
       Effect.gen(function* () {
         const filename = filePath.split("/").pop() || "";
         const opts = options || {};
+        const availableConcepts = opts.availableConcepts || [];
 
         // If heuristics only, build from extraction
         if (opts.heuristicsOnly) {
@@ -727,6 +810,7 @@ export const AutoTaggerLive = Layer.succeed(
             tags: [
               ...new Set([...pathTags, ...filenameTags, ...contentTags]),
             ].slice(0, 10),
+            concepts: [],
             confidence: 0.3,
             provider: "ollama" as LLMProvider, // Placeholder
           };
@@ -756,9 +840,16 @@ export const AutoTaggerLive = Layer.succeed(
           }
         }
 
-        // Run enrichment
+        // Run enrichment with available concepts
         const result = yield* Effect.tryPromise({
-          try: () => enrichWithLLM(filename, content, provider, model),
+          try: () =>
+            enrichWithLLM(
+              filename,
+              content,
+              provider,
+              availableConcepts,
+              model
+            ),
           catch: (error) =>
             new EnrichmentError(
               `Enrichment failed: ${

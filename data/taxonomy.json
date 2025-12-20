@@ -1,0 +1,281 @@
+{
+  "concepts": [
+    {
+      "id": "programming",
+      "prefLabel": "Programming",
+      "altLabels": ["coding", "software development", "software engineering"],
+      "definition": "Software development and programming topics"
+    },
+    {
+      "id": "education",
+      "prefLabel": "Education",
+      "altLabels": ["learning", "teaching", "pedagogy"],
+      "definition": "Learning and teaching practices"
+    },
+    {
+      "id": "business",
+      "prefLabel": "Business",
+      "altLabels": ["entrepreneurship", "commerce"],
+      "definition": "Business and entrepreneurship topics"
+    },
+    {
+      "id": "design",
+      "prefLabel": "Design",
+      "altLabels": ["design thinking"],
+      "definition": "Design disciplines and practices"
+    },
+    {
+      "id": "meta",
+      "prefLabel": "Meta-Skills",
+      "altLabels": ["productivity", "meta-learning"],
+      "definition": "Meta-skills and productivity practices"
+    },
+    {
+      "id": "programming/typescript",
+      "prefLabel": "TypeScript",
+      "altLabels": ["TS"],
+      "definition": "TypeScript language and ecosystem"
+    },
+    {
+      "id": "programming/react",
+      "prefLabel": "React",
+      "altLabels": ["React.js", "ReactJS"],
+      "definition": "React library and ecosystem"
+    },
+    {
+      "id": "programming/nextjs",
+      "prefLabel": "Next.js",
+      "altLabels": ["NextJS"],
+      "definition": "Next.js framework for React"
+    },
+    {
+      "id": "programming/testing",
+      "prefLabel": "Testing",
+      "altLabels": [
+        "QA",
+        "quality assurance",
+        "test-driven development",
+        "TDD"
+      ],
+      "definition": "Software testing practices and tools"
+    },
+    {
+      "id": "programming/architecture",
+      "prefLabel": "Software Architecture",
+      "altLabels": ["system design", "architectural patterns"],
+      "definition": "Software architecture and design patterns"
+    },
+    {
+      "id": "programming/devops",
+      "prefLabel": "DevOps",
+      "altLabels": ["CI/CD", "deployment", "infrastructure"],
+      "definition": "Development operations and infrastructure"
+    },
+    {
+      "id": "programming/ai-ml",
+      "prefLabel": "AI & Machine Learning",
+      "altLabels": ["artificial intelligence", "ML", "machine learning", "AI"],
+      "definition": "Artificial intelligence and machine learning"
+    },
+    {
+      "id": "education/instructional-design",
+      "prefLabel": "Instructional Design",
+      "altLabels": ["ID", "course design"],
+      "definition": "Design of educational experiences and materials"
+    },
+    {
+      "id": "education/learning-science",
+      "prefLabel": "Learning Science",
+      "altLabels": ["cognitive science", "educational psychology"],
+      "definition": "Science of how people learn"
+    },
+    {
+      "id": "education/course-creation",
+      "prefLabel": "Course Creation",
+      "altLabels": ["curriculum development"],
+      "definition": "Creating educational courses and programs"
+    },
+    {
+      "id": "education/assessment",
+      "prefLabel": "Assessment",
+      "altLabels": ["evaluation", "testing"],
+      "definition": "Educational assessment and evaluation"
+    },
+    {
+      "id": "business/marketing",
+      "prefLabel": "Marketing",
+      "altLabels": ["digital marketing", "growth"],
+      "definition": "Marketing strategies and practices"
+    },
+    {
+      "id": "business/copywriting",
+      "prefLabel": "Copywriting",
+      "altLabels": ["writing", "content writing"],
+      "definition": "Persuasive writing for business"
+    },
+    {
+      "id": "business/bootstrapping",
+      "prefLabel": "Bootstrapping",
+      "altLabels": ["self-funding", "indie hacking"],
+      "definition": "Building businesses without external funding"
+    },
+    {
+      "id": "business/product",
+      "prefLabel": "Product Management",
+      "altLabels": ["product development", "PM"],
+      "definition": "Product management and development"
+    },
+    {
+      "id": "business/sales",
+      "prefLabel": "Sales",
+      "altLabels": ["selling"],
+      "definition": "Sales strategies and techniques"
+    },
+    {
+      "id": "design/ux",
+      "prefLabel": "User Experience",
+      "altLabels": ["UX", "user interface", "UI"],
+      "definition": "User experience and interface design"
+    },
+    {
+      "id": "design/visual-design",
+      "prefLabel": "Visual Design",
+      "altLabels": ["graphic design", "aesthetics"],
+      "definition": "Visual design and aesthetics"
+    },
+    {
+      "id": "design/systems-thinking",
+      "prefLabel": "Systems Thinking",
+      "altLabels": ["systems design", "complexity"],
+      "definition": "Understanding and designing complex systems"
+    },
+    {
+      "id": "design/information-architecture",
+      "prefLabel": "Information Architecture",
+      "altLabels": ["IA", "content structure"],
+      "definition": "Structuring and organizing information"
+    },
+    {
+      "id": "meta/productivity",
+      "prefLabel": "Productivity",
+      "altLabels": ["efficiency", "time management"],
+      "definition": "Productivity systems and practices"
+    },
+    {
+      "id": "meta/note-taking",
+      "prefLabel": "Note-Taking",
+      "altLabels": ["note making", "PKM"],
+      "definition": "Note-taking and personal knowledge management"
+    },
+    {
+      "id": "meta/knowledge-management",
+      "prefLabel": "Knowledge Management",
+      "altLabels": ["KM", "information management"],
+      "definition": "Managing and organizing knowledge"
+    },
+    {
+      "id": "meta/writing",
+      "prefLabel": "Writing",
+      "altLabels": ["authoring", "composition"],
+      "definition": "Writing craft and practices"
+    }
+  ],
+  "hierarchy": [
+    {
+      "conceptId": "programming/typescript",
+      "broaderId": "programming"
+    },
+    {
+      "conceptId": "programming/react",
+      "broaderId": "programming"
+    },
+    {
+      "conceptId": "programming/nextjs",
+      "broaderId": "programming"
+    },
+    {
+      "conceptId": "programming/testing",
+      "broaderId": "programming"
+    },
+    {
+      "conceptId": "programming/architecture",
+      "broaderId": "programming"
+    },
+    {
+      "conceptId": "programming/devops",
+      "broaderId": "programming"
+    },
+    {
+      "conceptId": "programming/ai-ml",
+      "broaderId": "programming"
+    },
+    {
+      "conceptId": "education/instructional-design",
+      "broaderId": "education"
+    },
+    {
+      "conceptId": "education/learning-science",
+      "broaderId": "education"
+    },
+    {
+      "conceptId": "education/course-creation",
+      "broaderId": "education"
+    },
+    {
+      "conceptId": "education/assessment",
+      "broaderId": "education"
+    },
+    {
+      "conceptId": "business/marketing",
+      "broaderId": "business"
+    },
+    {
+      "conceptId": "business/copywriting",
+      "broaderId": "business"
+    },
+    {
+      "conceptId": "business/bootstrapping",
+      "broaderId": "business"
+    },
+    {
+      "conceptId": "business/product",
+      "broaderId": "business"
+    },
+    {
+      "conceptId": "business/sales",
+      "broaderId": "business"
+    },
+    {
+      "conceptId": "design/ux",
+      "broaderId": "design"
+    },
+    {
+      "conceptId": "design/visual-design",
+      "broaderId": "design"
+    },
+    {
+      "conceptId": "design/systems-thinking",
+      "broaderId": "design"
+    },
+    {
+      "conceptId": "design/information-architecture",
+      "broaderId": "design"
+    },
+    {
+      "conceptId": "meta/productivity",
+      "broaderId": "meta"
+    },
+    {
+      "conceptId": "meta/note-taking",
+      "broaderId": "meta"
+    },
+    {
+      "conceptId": "meta/knowledge-management",
+      "broaderId": "meta"
+    },
+    {
+      "conceptId": "meta/writing",
+      "broaderId": "meta"
+    }
+  ]
+}

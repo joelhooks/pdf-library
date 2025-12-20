@@ -4,6 +4,7 @@
 
 import { Effect, Layer } from "effect";
 import { describe, expect, test } from "bun:test";
+import { createClient } from "@libsql/client";
 import { Database } from "./Database.js";
 import { LibSQLDatabase } from "./LibSQLDatabase.js";
 import { Document, SearchOptions } from "../types.js";
@@ -28,6 +29,43 @@ describe("LibSQLDatabase", () => {
 
       const result = await Effect.runPromise(program);
       expect(result).toBe("created");
+    });
+
+    test("embeddings table uses F32_BLOB(1024) column type, not TEXT", async () => {
+      // REGRESSION PREVENTION TEST
+      // Root cause: Old PGLite code used TEXT for embeddings.
+      // libSQL requires F32_BLOB(1024) for vector search.
+      // If TEXT is used, vector search hangs.
+      //
+      // This test verifies the actual schema by querying sqlite_master
+
+      // Create and initialize database through the Effect layer
+      const program = Effect.gen(function* () {
+        yield* Database; // Force initialization
+        return "db-initialized";
+      });
+
+      const layer = LibSQLDatabase.make({ url: "file::memory:?cache=shared" });
+      await Effect.runPromise(Effect.provide(program, layer));
+
+      // Query schema using raw client on the same shared memory DB
+      const client = createClient({ url: "file::memory:?cache=shared" });
+      const result = await client.execute({
+        sql: "SELECT sql FROM sqlite_master WHERE type='table' AND name='embeddings'",
+        args: [],
+      });
+
+      client.close();
+
+      // Verify schema contains F32_BLOB(1024), not TEXT
+      expect(result.rows.length).toBe(1);
+      const schema = result.rows[0].sql as string;
+
+      // CRITICAL: Must use F32_BLOB(1024) for libSQL vector operations
+      expect(schema).toContain("F32_BLOB(1024)");
+
+      // MUST NOT use TEXT (PGLite legacy schema)
+      expect(schema).not.toContain("embedding TEXT");
     });
   });
 
@@ -225,6 +263,145 @@ describe("LibSQLDatabase", () => {
       expect(stats.documents).toBe(1);
       expect(stats.chunks).toBe(1);
       expect(stats.embeddings).toBe(0);
+    });
+  });
+
+  describe("taxonomy schema (SKOS)", () => {
+    test("concepts table exists with correct schema", async () => {
+      // RED: Verify SKOS concepts table exists
+      const program = Effect.gen(function* () {
+        yield* Database; // Force initialization
+        return "db-initialized";
+      });
+
+      const layer = LibSQLDatabase.make({ url: "file::memory:?cache=shared" });
+      await Effect.runPromise(Effect.provide(program, layer));
+
+      // Query schema using raw client
+      const client = createClient({ url: "file::memory:?cache=shared" });
+      const result = await client.execute({
+        sql: "SELECT sql FROM sqlite_master WHERE type='table' AND name='concepts'",
+        args: [],
+      });
+
+      client.close();
+
+      expect(result.rows.length).toBe(1);
+      const schema = result.rows[0].sql as string;
+
+      // Verify columns
+      expect(schema).toContain("id TEXT PRIMARY KEY");
+      expect(schema).toContain("pref_label TEXT NOT NULL");
+      expect(schema).toContain("alt_labels TEXT DEFAULT '[]'");
+      expect(schema).toContain("definition TEXT");
+      expect(schema).toContain("created_at TEXT NOT NULL");
+    });
+
+    test("concept_hierarchy table exists with composite primary key", async () => {
+      const program = Effect.gen(function* () {
+        yield* Database;
+        return "db-initialized";
+      });
+
+      const layer = LibSQLDatabase.make({ url: "file::memory:?cache=shared" });
+      await Effect.runPromise(Effect.provide(program, layer));
+
+      const client = createClient({ url: "file::memory:?cache=shared" });
+      const result = await client.execute({
+        sql: "SELECT sql FROM sqlite_master WHERE type='table' AND name='concept_hierarchy'",
+        args: [],
+      });
+
+      client.close();
+
+      expect(result.rows.length).toBe(1);
+      const schema = result.rows[0].sql as string;
+
+      expect(schema).toContain("concept_id TEXT NOT NULL");
+      expect(schema).toContain("broader_id TEXT NOT NULL");
+      expect(schema).toContain("REFERENCES concepts(id)");
+      expect(schema).toContain("ON DELETE CASCADE");
+      expect(schema).toContain("PRIMARY KEY(concept_id, broader_id)");
+    });
+
+    test("concept_relations table exists", async () => {
+      const program = Effect.gen(function* () {
+        yield* Database;
+        return "db-initialized";
+      });
+
+      const layer = LibSQLDatabase.make({ url: "file::memory:?cache=shared" });
+      await Effect.runPromise(Effect.provide(program, layer));
+
+      const client = createClient({ url: "file::memory:?cache=shared" });
+      const result = await client.execute({
+        sql: "SELECT sql FROM sqlite_master WHERE type='table' AND name='concept_relations'",
+        args: [],
+      });
+
+      client.close();
+
+      expect(result.rows.length).toBe(1);
+      const schema = result.rows[0].sql as string;
+
+      expect(schema).toContain("concept_id TEXT NOT NULL");
+      expect(schema).toContain("related_id TEXT NOT NULL");
+      expect(schema).toContain("relation_type TEXT DEFAULT 'related'");
+      expect(schema).toContain("PRIMARY KEY(concept_id, related_id)");
+    });
+
+    test("document_concepts table exists", async () => {
+      const program = Effect.gen(function* () {
+        yield* Database;
+        return "db-initialized";
+      });
+
+      const layer = LibSQLDatabase.make({ url: "file::memory:?cache=shared" });
+      await Effect.runPromise(Effect.provide(program, layer));
+
+      const client = createClient({ url: "file::memory:?cache=shared" });
+      const result = await client.execute({
+        sql: "SELECT sql FROM sqlite_master WHERE type='table' AND name='document_concepts'",
+        args: [],
+      });
+
+      client.close();
+
+      expect(result.rows.length).toBe(1);
+      const schema = result.rows[0].sql as string;
+
+      expect(schema).toContain("doc_id TEXT NOT NULL");
+      expect(schema).toContain("concept_id TEXT NOT NULL");
+      expect(schema).toContain("confidence REAL DEFAULT 1.0");
+      expect(schema).toContain("source TEXT DEFAULT 'llm'");
+      expect(schema).toContain("PRIMARY KEY(doc_id, concept_id)");
+    });
+
+    test("taxonomy indexes exist for efficient hierarchy traversal", async () => {
+      const program = Effect.gen(function* () {
+        yield* Database;
+        return "db-initialized";
+      });
+
+      const layer = LibSQLDatabase.make({ url: "file::memory:?cache=shared" });
+      await Effect.runPromise(Effect.provide(program, layer));
+
+      const client = createClient({ url: "file::memory:?cache=shared" });
+      const result = await client.execute({
+        sql: "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%concept%'",
+        args: [],
+      });
+
+      client.close();
+
+      const indexNames = result.rows.map((r) => r.name as string);
+
+      expect(indexNames).toContain("idx_concept_hierarchy_concept");
+      expect(indexNames).toContain("idx_concept_hierarchy_broader");
+      expect(indexNames).toContain("idx_concept_relations_concept");
+      expect(indexNames).toContain("idx_concept_relations_related");
+      expect(indexNames).toContain("idx_document_concepts_doc");
+      expect(indexNames).toContain("idx_document_concepts_concept");
     });
   });
 

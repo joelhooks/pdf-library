@@ -189,10 +189,9 @@ export class LibSQLDatabase {
           addEmbeddings: (embeddings) =>
             Effect.tryPromise({
               try: async () => {
-                // LibSQL stores vectors as F32_BLOB
-                // Must serialize as JSON string of float array
+                // LibSQL stores vectors as F32_BLOB using vector32() function
                 const statements = embeddings.map((item) => ({
-                  sql: "INSERT INTO embeddings (chunk_id, embedding) VALUES (?, ?)",
+                  sql: "INSERT INTO embeddings (chunk_id, embedding) VALUES (?, vector32(?))",
                   args: [item.chunkId, JSON.stringify(item.embedding)],
                 }));
                 await client.batch(statements, "write");
@@ -203,11 +202,12 @@ export class LibSQLDatabase {
           vectorSearch: (queryEmbedding, options) =>
             Effect.tryPromise({
               try: async () => {
-                const { limit = 10, threshold = 0.3, tags } = options || {};
+                const { limit = 10, tags, threshold = 0.0 } = options || {};
+                const queryVec = JSON.stringify(queryEmbedding);
 
-                // LibSQL vector search uses vector_distance_cos()
-                // Returns 0-2, where 0 is identical
-                // Similarity = 1 - (distance / 2) to get 0-1 range
+                // Use vector_top_k with the DiskANN index for fast ANN search
+                // vector_top_k returns rowid as 'id', we join to get full data
+                // Then calculate actual distance for scoring
                 let sql = `
                   SELECT 
                     c.doc_id,
@@ -215,41 +215,49 @@ export class LibSQLDatabase {
                     c.page,
                     c.chunk_index,
                     c.content,
-                    (1 - vector_distance_cos(e.embedding, ?) / 2) as score
-                  FROM embeddings e
+                    vector_distance_cos(e.embedding, vector32(?)) as distance
+                  FROM vector_top_k('embeddings_idx', vector32(?), ?) AS top
+                  JOIN embeddings e ON e.rowid = top.id
                   JOIN chunks c ON c.id = e.chunk_id
                   JOIN documents d ON d.id = c.doc_id
                 `;
 
-                const args: any[] = [JSON.stringify(queryEmbedding)];
+                // Fetch more than limit to allow for filtering
+                const fetchLimit = tags && tags.length > 0 ? limit * 3 : limit;
+                const args: any[] = [queryVec, queryVec, fetchLimit];
 
                 const conditions: string[] = [];
 
                 if (tags && tags.length > 0) {
-                  // Check each tag
                   conditions.push(
-                    tags
-                      .map(
-                        () =>
-                          "EXISTS (SELECT 1 FROM json_each(d.tags) WHERE value = ?)"
-                      )
-                      .join(" OR ")
+                    "(" +
+                      tags
+                        .map(
+                          () =>
+                            "EXISTS (SELECT 1 FROM json_each(d.tags) WHERE value = ?)"
+                        )
+                        .join(" OR ") +
+                      ")"
                   );
                   args.push(...tags);
                 }
 
-                // Filter by threshold
-                conditions.push(
-                  "(1 - vector_distance_cos(e.embedding, ?) / 2) >= ?"
-                );
-                args.push(JSON.stringify(queryEmbedding), threshold);
+                // Filter by threshold (distance < 2*(1-threshold))
+                // score = 1 - distance/2, so distance = 2*(1-score)
+                // if score >= threshold, then distance <= 2*(1-threshold)
+                if (threshold > 0) {
+                  const maxDistance = 2 * (1 - threshold);
+                  conditions.push(
+                    `vector_distance_cos(e.embedding, vector32(?)) <= ?`
+                  );
+                  args.push(queryVec, maxDistance);
+                }
 
                 if (conditions.length > 0) {
                   sql += " WHERE " + conditions.join(" AND ");
                 }
 
-                sql += ` ORDER BY vector_distance_cos(e.embedding, ?) ASC LIMIT ${limit}`;
-                args.push(JSON.stringify(queryEmbedding));
+                sql += ` ORDER BY distance ASC LIMIT ${limit}`;
 
                 const result = await client.execute({ sql, args });
 
@@ -261,7 +269,8 @@ export class LibSQLDatabase {
                       page: Number(row.page),
                       chunkIndex: Number(row.chunk_index),
                       content: row.content,
-                      score: Number(row.score),
+                      // Convert distance to similarity score: score = 1 - distance/2
+                      score: 1 - Number(row.distance) / 2,
                       matchType: "vector",
                     } as any)
                 );
@@ -500,6 +509,12 @@ export class LibSQLDatabase {
 // ============================================================================
 
 async function initSchema(client: Client): Promise<void> {
+  // Set busy timeout to wait up to 30s for locks instead of failing immediately
+  await client.execute("PRAGMA busy_timeout = 30000");
+
+  // Ensure WAL mode for better concurrent access
+  await client.execute("PRAGMA journal_mode = WAL");
+
   // Documents table
   await client.execute(`
     CREATE TABLE IF NOT EXISTS documents (
@@ -541,11 +556,104 @@ async function initSchema(client: Client): Promise<void> {
     `CREATE INDEX IF NOT EXISTS idx_docs_path ON documents(path)`
   );
 
+  // Vector index for fast ANN search (DiskANN algorithm)
+  // compress_neighbors=float8 reduces index size ~4x with minimal recall loss (~1-2%)
+  await client.execute(
+    `CREATE INDEX IF NOT EXISTS embeddings_idx ON embeddings(libsql_vector_idx(embedding, 'compress_neighbors=float8'))`
+  );
+
   // FTS5 virtual table for full-text search
   await client.execute(`
     CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts 
     USING fts5(content, content='chunks', content_rowid='rowid')
   `);
+
+  // ============================================================================
+  // SKOS Taxonomy Schema (W3C Knowledge Organization)
+  // ============================================================================
+  //
+  // HIERARCHY TRAVERSAL PATTERNS (LibSQL has no graph extensions)
+  // Use recursive CTEs for transitive queries:
+  //
+  // Get all ancestors (transitive broader):
+  //   WITH RECURSIVE ancestors AS (
+  //     SELECT broader_id FROM concept_hierarchy WHERE concept_id = ?
+  //     UNION
+  //     SELECT ch.broader_id FROM concept_hierarchy ch
+  //     JOIN ancestors a ON ch.concept_id = a.broader_id
+  //   )
+  //   SELECT * FROM concepts WHERE id IN (SELECT broader_id FROM ancestors);
+  //
+  // Get all descendants (transitive narrower):
+  //   WITH RECURSIVE descendants AS (
+  //     SELECT concept_id FROM concept_hierarchy WHERE broader_id = ?
+  //     UNION
+  //     SELECT ch.concept_id FROM concept_hierarchy ch
+  //     JOIN descendants d ON ch.broader_id = d.concept_id
+  //   )
+  //   SELECT * FROM concepts WHERE id IN (SELECT concept_id FROM descendants);
+
+  // Concepts table - stores controlled vocabulary terms
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS concepts (
+      id TEXT PRIMARY KEY,
+      pref_label TEXT NOT NULL,
+      alt_labels TEXT DEFAULT '[]',
+      definition TEXT,
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  // Concept Hierarchy - polyhierarchy support (multiple parents)
+  // Uses broader/narrower semantics from SKOS
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS concept_hierarchy (
+      concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+      broader_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+      PRIMARY KEY(concept_id, broader_id)
+    )
+  `);
+
+  // Concept Relations - associative relationships (SKOS 'related')
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS concept_relations (
+      concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+      related_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+      relation_type TEXT DEFAULT 'related',
+      PRIMARY KEY(concept_id, related_id)
+    )
+  `);
+
+  // Document-Concept mappings - link documents to concepts
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS document_concepts (
+      doc_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+      concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+      confidence REAL DEFAULT 1.0,
+      source TEXT DEFAULT 'llm',
+      PRIMARY KEY(doc_id, concept_id)
+    )
+  `);
+
+  // Taxonomy indexes for efficient hierarchy traversal
+  await client.execute(
+    `CREATE INDEX IF NOT EXISTS idx_concept_hierarchy_concept ON concept_hierarchy(concept_id)`
+  );
+  await client.execute(
+    `CREATE INDEX IF NOT EXISTS idx_concept_hierarchy_broader ON concept_hierarchy(broader_id)`
+  );
+  await client.execute(
+    `CREATE INDEX IF NOT EXISTS idx_concept_relations_concept ON concept_relations(concept_id)`
+  );
+  await client.execute(
+    `CREATE INDEX IF NOT EXISTS idx_concept_relations_related ON concept_relations(related_id)`
+  );
+  await client.execute(
+    `CREATE INDEX IF NOT EXISTS idx_document_concepts_doc ON document_concepts(doc_id)`
+  );
+  await client.execute(
+    `CREATE INDEX IF NOT EXISTS idx_document_concepts_concept ON document_concepts(concept_id)`
+  );
 
   // Triggers to keep FTS5 in sync with chunks table
   await client.execute(`
