@@ -1,9 +1,12 @@
 #!/usr/bin/env -S bun run
 /**
- * Bulk Ingest - Batch import with enrichment
+ * Bulk Ingest - Batch import with LLM-powered enrichment
+ *
+ * Uses taxonomy concepts for smart tagging via LLM.
+ * Extracts text from PDFs before enrichment.
  */
 
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Logger, LogLevel } from "effect";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import {
@@ -13,6 +16,19 @@ import {
   PDFLibraryLive,
 } from "../src/index.js";
 import { AutoTagger, AutoTaggerLive } from "../src/services/AutoTagger.js";
+import {
+  PDFExtractor,
+  PDFExtractorLive,
+} from "../src/services/PDFExtractor.js";
+import {
+  MarkdownExtractor,
+  MarkdownExtractorLive,
+} from "../src/services/MarkdownExtractor.js";
+import {
+  TaxonomyService,
+  TaxonomyServiceImpl,
+} from "../src/services/TaxonomyService.js";
+import { LibraryConfig } from "../src/types.js";
 
 // ============================================================================
 // CLI Parsing
@@ -25,6 +41,7 @@ const manualTags =
   tagsIdx !== -1 ? args[tagsIdx + 1]?.split(",").map((t) => t.trim()) : [];
 const autoTag = args.includes("--auto-tag");
 const enrich = args.includes("--enrich");
+const verbose = args.includes("--verbose");
 
 if (directories.length === 0) {
   console.log(`
@@ -36,8 +53,9 @@ Usage: ./scripts/bulk-ingest.ts <dir1> [dir2] [options]
 
 Options:
   --tags tag1,tag2   Manual tags for all files
-  --auto-tag         Smart tagging (fast, heuristics + light LLM)
-  --enrich           Full enrichment (slower, extracts title/summary/concepts)
+  --auto-tag         Smart tagging (heuristics + light LLM)
+  --enrich           Full enrichment (LLM extracts title/summary/concepts)
+  --verbose          Show detailed logging
 
 Examples:
   ./scripts/bulk-ingest.ts ~/books --tags "books"
@@ -76,12 +94,10 @@ function discoverFiles(dir: string): string[] {
   return files;
 }
 
-/** Truncate string with ellipsis */
 function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max - 1) + "…" : s;
 }
 
-/** Format duration */
 function formatDuration(ms: number): string {
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
@@ -89,7 +105,6 @@ function formatDuration(ms: number): string {
   return `${m}m ${s % 60}s`;
 }
 
-/** Box drawing for nice output */
 const box = {
   h: "─",
   v: "│",
@@ -143,6 +158,27 @@ ${
 
   const library = yield* PDFLibrary;
   const tagger = autoTag || enrich ? yield* AutoTagger : null;
+  const pdfExtractor = yield* PDFExtractor;
+  const _mdExtractor = yield* MarkdownExtractor;
+  const taxonomy = yield* TaxonomyService;
+
+  // Load taxonomy concepts for smart tagging
+  let availableConcepts: Array<{
+    id: string;
+    prefLabel: string;
+    altLabels: string[];
+  }> = [];
+
+  if (enrich) {
+    console.log("🧠 Loading taxonomy concepts...");
+    const concepts = yield* taxonomy.listConcepts();
+    availableConcepts = concepts.map((c) => ({
+      id: c.id,
+      prefLabel: c.prefLabel,
+      altLabels: c.altLabels,
+    }));
+    console.log(`   Found ${availableConcepts.length} concepts\n`);
+  }
 
   // Filter already ingested
   const existingDocs = yield* library.list();
@@ -168,6 +204,7 @@ ${
   for (let i = 0; i < files.length; i++) {
     const filePath = files[i];
     const filename = basename(filePath);
+    const ext = extname(filePath).toLowerCase();
     const pct = Math.round(((i + 1) / files.length) * 100);
     const fileStart = Date.now();
 
@@ -184,25 +221,46 @@ ${
     let fileTags = [...manualTags];
     let title: string | undefined;
 
-    if (tagger) {
-      const ext = extname(filePath).toLowerCase();
-      let content: string | undefined;
+    // Extract content for enrichment
+    let content: string | undefined;
 
-      // Read content for markdown files
-      if (ext === ".md" || ext === ".markdown") {
-        const readResult = yield* Effect.either(
-          Effect.tryPromise(() => Bun.file(filePath).text())
+    if (ext === ".md" || ext === ".markdown") {
+      // Markdown: read file directly
+      const readResult = yield* Effect.either(
+        Effect.tryPromise(() => Bun.file(filePath).text())
+      );
+      if (readResult._tag === "Right") {
+        content = readResult.right;
+      }
+    } else if (ext === ".pdf") {
+      // PDF: extract text using PDFExtractor
+      if (enrich || autoTag) {
+        console.log("   📄 Extracting PDF text...");
+        const extractResult = yield* Effect.either(
+          pdfExtractor.extract(filePath)
         );
-        if (readResult._tag === "Right") {
-          content = readResult.right;
+        if (extractResult._tag === "Right") {
+          // Combine first N pages of text for enrichment (don't need entire doc)
+          const pages = extractResult.right.pages.slice(0, 10);
+          content = pages.map((p) => p.text).join("\n\n");
+          if (content.length > 8000) {
+            content = content.slice(0, 8000);
+          }
+        } else {
+          console.log("   ⚠️  PDF extraction failed, using filename only");
         }
       }
+    }
 
+    if (tagger && (enrich || autoTag)) {
       if (enrich && content) {
-        // Full enrichment
-        console.log("   🔍 Enriching...");
+        // Full enrichment with LLM
+        console.log("   🔍 Enriching with LLM...");
         const enrichResult = yield* Effect.either(
-          tagger.enrich(filePath, content, { basePath: directories[0] })
+          tagger.enrich(filePath, content, {
+            basePath: directories[0],
+            availableConcepts,
+          })
         );
 
         if (enrichResult._tag === "Right") {
@@ -226,11 +284,24 @@ ${
               }`
             );
           }
+          if (r.proposedConcepts && r.proposedConcepts.length > 0) {
+            console.log(
+              `   💡 Proposed: ${r.proposedConcepts
+                .map((c) => c.prefLabel)
+                .slice(0, 2)
+                .join(", ")}`
+            );
+          }
           if (r.summary) {
             console.log(`   📄 Summary:  ${truncate(r.summary, 60)}`);
           }
+          console.log(
+            `   🤖 Provider: ${r.provider} (${Math.round(
+              r.confidence * 100
+            )}% confidence)`
+          );
         } else {
-          console.log("   ⚠️  Enrichment failed, using heuristics");
+          console.log("   ⚠️  Enrichment failed, falling back to heuristics");
           const tagResult = yield* Effect.either(
             tagger.generateTags(filePath, content, {
               heuristicsOnly: true,
@@ -239,10 +310,11 @@ ${
           );
           if (tagResult._tag === "Right") {
             fileTags = [...fileTags, ...tagResult.right.allTags];
+            console.log(`   🏷️  Tags:   ${fileTags.slice(0, 6).join(", ")}`);
           }
         }
-      } else {
-        // Auto-tag only
+      } else if (autoTag) {
+        // Auto-tag only (lighter weight)
         const tagResult = yield* Effect.either(
           tagger.generateTags(filePath, content, {
             heuristicsOnly: !content,
@@ -328,8 +400,30 @@ ${
 `);
 });
 
-const AppLayer = PDFLibraryLive.pipe(Layer.provideMerge(AutoTaggerLive));
-Effect.runPromise(program.pipe(Effect.provide(AppLayer))).catch((err) => {
+// ============================================================================
+// Layer Setup
+// ============================================================================
+
+const config = LibraryConfig.fromEnv();
+const taxonomyLayer = TaxonomyServiceImpl.make({
+  url: `file:${config.dbPath}`,
+});
+
+const AppLayer = PDFLibraryLive.pipe(
+  Layer.provideMerge(AutoTaggerLive),
+  Layer.provideMerge(PDFExtractorLive),
+  Layer.provideMerge(MarkdownExtractorLive),
+  Layer.provideMerge(taxonomyLayer)
+);
+
+// Suppress Effect logging unless verbose
+const logLayer = verbose
+  ? Logger.pretty
+  : Logger.minimumLogLevel(LogLevel.Warning);
+
+Effect.runPromise(
+  program.pipe(Effect.provide(AppLayer), Effect.provide(logLayer))
+).catch((err) => {
   console.error("Fatal error:", err);
   process.exit(1);
 });
