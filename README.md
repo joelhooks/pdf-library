@@ -244,13 +244,25 @@ The taxonomy is a hierarchical concept system for organizing documents. It ships
 
 ### Growing Your Taxonomy
 
-When enriching documents, the LLM may propose new concepts. These are logged but not automatically added. To review and add them:
+When enriching documents, the LLM may propose new concepts. These are saved for review:
 
 ```bash
-# See proposed concepts from recent ingests
+# See proposed concepts from enrichment
 pdf-brain taxonomy proposed
 
-# Add a proposed concept
+# Accept a specific concept
+pdf-brain taxonomy accept ai/rag --broader ai-ml
+
+# Accept all proposed concepts
+pdf-brain taxonomy accept --all
+
+# Reject a concept
+pdf-brain taxonomy reject ai/rag
+
+# Clear all proposals
+pdf-brain taxonomy clear-proposed
+
+# Manually add a concept
 pdf-brain taxonomy add ai/rag --label "RAG" --broader ai-ml
 
 # Or edit data/taxonomy.json and re-seed

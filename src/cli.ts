@@ -24,8 +24,66 @@ import {
   AutoTagger,
   AutoTaggerLive,
   type EnrichmentResult,
+  type ProposedConcept,
 } from "./services/AutoTagger.js";
 import { PDFExtractor, PDFExtractorLive } from "./services/PDFExtractor.js";
+import { writeFileSync } from "fs";
+
+// ============================================================================
+// Proposed Concepts Storage
+// ============================================================================
+
+interface ProposedConceptEntry extends ProposedConcept {
+  sourceDoc?: string;
+  proposedAt: string;
+  suggestedBroader?: string;
+}
+
+function getProposedConceptsPath(): string {
+  const config = LibraryConfig.fromEnv();
+  return join(config.libraryPath, "proposed-concepts.json");
+}
+
+function loadProposedConcepts(): ProposedConceptEntry[] {
+  const path = getProposedConceptsPath();
+  if (!existsSync(path)) return [];
+  try {
+    return JSON.parse(readFileSync(path, "utf-8")) as ProposedConceptEntry[];
+  } catch {
+    return [];
+  }
+}
+
+function saveProposedConcepts(concepts: ProposedConceptEntry[]): void {
+  const path = getProposedConceptsPath();
+  writeFileSync(path, JSON.stringify(concepts, null, 2));
+}
+
+function addProposedConcepts(
+  newConcepts: ProposedConcept[],
+  sourceDoc?: string
+): number {
+  const existing = loadProposedConcepts();
+  const existingIds = new Set(existing.map((c) => c.id));
+
+  let added = 0;
+  for (const concept of newConcepts) {
+    if (!existingIds.has(concept.id)) {
+      existing.push({
+        ...concept,
+        sourceDoc,
+        proposedAt: new Date().toISOString(),
+      });
+      existingIds.add(concept.id);
+      added++;
+    }
+  }
+
+  if (added > 0) {
+    saveProposedConcepts(existing);
+  }
+  return added;
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(
@@ -1506,6 +1564,23 @@ const program = Effect.gen(function* () {
                       .join(", ")}`
                   );
                 }
+                // Save proposed concepts for later review
+                if (
+                  enrichResult.proposedConcepts &&
+                  enrichResult.proposedConcepts.length > 0
+                ) {
+                  const added = addProposedConcepts(
+                    enrichResult.proposedConcepts,
+                    filePath
+                  );
+                  if (added > 0) {
+                    yield* Console.log(
+                      `    Proposed: ${enrichResult.proposedConcepts
+                        .map((c) => c.prefLabel)
+                        .join(", ")}`
+                    );
+                  }
+                }
               } else if (enrich && !content) {
                 // Enrichment requested but no content - fall back to heuristics
                 yield* Console.log(
@@ -1765,6 +1840,142 @@ if (args[0] === "taxonomy") {
               yield* Console.log(`  ${concept.definition}`);
             }
           }
+        }
+        break;
+      }
+
+      case "proposed": {
+        const proposed = loadProposedConcepts();
+
+        if (proposed.length === 0) {
+          yield* Console.log("No proposed concepts yet.");
+          yield* Console.log(
+            "\nProposed concepts are collected during enrichment."
+          );
+          yield* Console.log(
+            "Run 'pdf-brain ingest <dir> --enrich' to generate proposals."
+          );
+          break;
+        }
+
+        yield* Console.log(`Proposed Concepts: ${proposed.length}\n`);
+
+        for (let i = 0; i < proposed.length; i++) {
+          const p = proposed[i];
+          yield* Console.log(`[${i + 1}] ${p.prefLabel} (${p.id})`);
+          if (p.definition) {
+            yield* Console.log(`    ${p.definition}`);
+          }
+          if (p.altLabels && p.altLabels.length > 0) {
+            yield* Console.log(`    Aliases: ${p.altLabels.join(", ")}`);
+          }
+          if (p.sourceDoc) {
+            yield* Console.log(`    Source: ${basename(p.sourceDoc)}`);
+          }
+        }
+
+        yield* Console.log(`\nTo accept a concept:`);
+        yield* Console.log(
+          `  pdf-brain taxonomy accept <id> [--broader <parent>]`
+        );
+        yield* Console.log(`\nTo accept all:`);
+        yield* Console.log(`  pdf-brain taxonomy accept --all`);
+        yield* Console.log(`\nTo clear proposals:`);
+        yield* Console.log(`  pdf-brain taxonomy clear-proposed`);
+        break;
+      }
+
+      case "accept": {
+        const conceptId = args[2];
+        const acceptAll = opts.all === true;
+        const broader = opts.broader as string | undefined;
+
+        if (!conceptId && !acceptAll) {
+          yield* Console.error("Error: Concept ID or --all required");
+          yield* Console.error(
+            "Usage: pdf-brain taxonomy accept <id> [--broader <parent>]"
+          );
+          yield* Console.error("       pdf-brain taxonomy accept --all");
+          process.exit(1);
+        }
+
+        const proposed = loadProposedConcepts();
+
+        if (proposed.length === 0) {
+          yield* Console.log("No proposed concepts to accept.");
+          break;
+        }
+
+        let accepted = 0;
+        const remaining: ProposedConceptEntry[] = [];
+
+        for (const p of proposed) {
+          if (acceptAll || p.id === conceptId) {
+            // Add to taxonomy
+            yield* taxonomy.addConcept({
+              id: p.id,
+              prefLabel: p.prefLabel,
+              altLabels: p.altLabels || [],
+              definition: p.definition,
+            });
+
+            // Add hierarchy if specified or suggested
+            const parentId = broader || p.suggestedBroader;
+            if (parentId) {
+              const parentResult = yield* Effect.either(
+                taxonomy.addBroader(p.id, parentId)
+              );
+              if (parentResult._tag === "Left") {
+                yield* Console.log(
+                  `  ⚠ Could not set parent ${parentId} for ${p.id}`
+                );
+              }
+            }
+
+            yield* Console.log(`✓ Added: ${p.prefLabel} (${p.id})`);
+            accepted++;
+          } else {
+            remaining.push(p);
+          }
+        }
+
+        saveProposedConcepts(remaining);
+        yield* Console.log(
+          `\nAccepted ${accepted} concept(s), ${remaining.length} remaining.`
+        );
+        break;
+      }
+
+      case "reject": {
+        const conceptId = args[2];
+
+        if (!conceptId) {
+          yield* Console.error("Error: Concept ID required");
+          yield* Console.error("Usage: pdf-brain taxonomy reject <id>");
+          process.exit(1);
+        }
+
+        const proposed = loadProposedConcepts();
+        const remaining = proposed.filter((p) => p.id !== conceptId);
+
+        if (remaining.length === proposed.length) {
+          yield* Console.log(`Concept not found in proposals: ${conceptId}`);
+        } else {
+          saveProposedConcepts(remaining);
+          yield* Console.log(`✓ Rejected: ${conceptId}`);
+        }
+        break;
+      }
+
+      case "clear-proposed": {
+        const proposed = loadProposedConcepts();
+        if (proposed.length === 0) {
+          yield* Console.log("No proposed concepts to clear.");
+        } else {
+          saveProposedConcepts([]);
+          yield* Console.log(
+            `✓ Cleared ${proposed.length} proposed concept(s).`
+          );
         }
         break;
       }
