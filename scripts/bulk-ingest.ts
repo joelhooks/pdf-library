@@ -7,7 +7,13 @@
  */
 
 import { Effect, Layer, Logger, LogLevel } from "effect";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import {
+  existsSync,
+  readdirSync,
+  statSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, extname, join } from "node:path";
 import {
   AddOptions,
@@ -15,7 +21,11 @@ import {
   PDFLibrary,
   PDFLibraryLive,
 } from "../src/index.js";
-import { AutoTagger, AutoTaggerLive } from "../src/services/AutoTagger.js";
+import {
+  AutoTagger,
+  AutoTaggerLive,
+  type ProposedConcept,
+} from "../src/services/AutoTagger.js";
 import {
   PDFExtractor,
   PDFExtractorLive,
@@ -29,6 +39,61 @@ import {
   TaxonomyServiceImpl,
 } from "../src/services/TaxonomyService.js";
 import { LibraryConfig } from "../src/types.js";
+
+// ============================================================================
+// Proposed Concepts Storage
+// ============================================================================
+
+interface ProposedConceptEntry extends ProposedConcept {
+  sourceDoc?: string;
+  proposedAt: string;
+}
+
+function getProposedConceptsPath(): string {
+  const cfg = LibraryConfig.fromEnv();
+  return join(cfg.libraryPath, "proposed-concepts.json");
+}
+
+function loadProposedConcepts(): ProposedConceptEntry[] {
+  const path = getProposedConceptsPath();
+  if (!existsSync(path)) return [];
+  try {
+    return JSON.parse(readFileSync(path, "utf-8")) as ProposedConceptEntry[];
+  } catch {
+    return [];
+  }
+}
+
+function saveProposedConcepts(concepts: ProposedConceptEntry[]): void {
+  const path = getProposedConceptsPath();
+  writeFileSync(path, JSON.stringify(concepts, null, 2));
+}
+
+function addProposedConcepts(
+  newConcepts: ProposedConcept[],
+  sourceDoc?: string
+): number {
+  const existing = loadProposedConcepts();
+  const existingIds = new Set(existing.map((c) => c.id));
+
+  let added = 0;
+  for (const concept of newConcepts) {
+    if (!existingIds.has(concept.id)) {
+      existing.push({
+        ...concept,
+        sourceDoc,
+        proposedAt: new Date().toISOString(),
+      });
+      existingIds.add(concept.id);
+      added++;
+    }
+  }
+
+  if (added > 0) {
+    saveProposedConcepts(existing);
+  }
+  return added;
+}
 
 // ============================================================================
 // CLI Parsing
@@ -285,12 +350,15 @@ ${
             );
           }
           if (r.proposedConcepts && r.proposedConcepts.length > 0) {
-            console.log(
-              `   💡 Proposed: ${r.proposedConcepts
-                .map((c) => c.prefLabel)
-                .slice(0, 2)
-                .join(", ")}`
-            );
+            const added = addProposedConcepts(r.proposedConcepts, filePath);
+            if (added > 0) {
+              console.log(
+                `   💡 Proposed: ${r.proposedConcepts
+                  .map((c) => c.prefLabel)
+                  .slice(0, 2)
+                  .join(", ")} (${added} new)`
+              );
+            }
           }
           if (r.summary) {
             console.log(`   📄 Summary:  ${truncate(r.summary, 60)}`);
