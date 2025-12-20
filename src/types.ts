@@ -23,7 +23,7 @@ export class Document extends Schema.Class<Document>("Document")({
     default: () => "pdf" as const,
   }),
   metadata: Schema.optional(
-    Schema.Record({ key: Schema.String, value: Schema.Unknown }),
+    Schema.Record({ key: Schema.String, value: Schema.Unknown })
   ),
 }) {}
 
@@ -53,7 +53,7 @@ export class SearchResult extends Schema.Class<SearchResult>("SearchResult")({
   expandedContent: Schema.optional(Schema.String),
   /** Range of chunk indices included in expandedContent */
   expandedRange: Schema.optional(
-    Schema.Struct({ start: Schema.Number, end: Schema.Number }),
+    Schema.Struct({ start: Schema.Number, end: Schema.Number })
   ),
 }) {}
 
@@ -69,11 +69,11 @@ export class LibraryConfig extends Schema.Class<LibraryConfig>("LibraryConfig")(
     ollamaHost: Schema.String,
     chunkSize: Schema.Number,
     chunkOverlap: Schema.Number,
-  },
+  }
 ) {
   static readonly Default = new LibraryConfig({
     libraryPath: `${process.env.HOME}/Documents/.pdf-library`,
-    dbPath: `${process.env.HOME}/Documents/.pdf-library/library.db`,
+    dbPath: `${process.env.HOME}/Documents/.pdf-library/pdf-brain.db`,
     ollamaModel: process.env.OLLAMA_MODEL || "mxbai-embed-large",
     ollamaHost: process.env.OLLAMA_HOST || "http://localhost:11434",
     chunkSize: 512,
@@ -86,7 +86,7 @@ export class LibraryConfig extends Schema.Class<LibraryConfig>("LibraryConfig")(
       `${process.env.HOME}/Documents/.pdf-library`;
     return new LibraryConfig({
       libraryPath,
-      dbPath: `${libraryPath}/library.db`,
+      dbPath: `${libraryPath}/pdf-brain.db`,
       ollamaModel: process.env.OLLAMA_MODEL || "mxbai-embed-large",
       ollamaHost: process.env.OLLAMA_HOST || "http://localhost:11434",
       chunkSize: 512,
@@ -107,14 +107,14 @@ export class SearchOptions extends Schema.Class<SearchOptions>("SearchOptions")(
     hybrid: Schema.optionalWith(Schema.Boolean, { default: () => true }),
     /** Max chars for expanded context per result. 0 = no expansion (default) */
     expandChars: Schema.optionalWith(Schema.Number, { default: () => 0 }),
-  },
+  }
 ) {}
 
 export class AddOptions extends Schema.Class<AddOptions>("AddOptions")({
   title: Schema.optional(Schema.String),
   tags: Schema.optional(Schema.Array(Schema.String)),
   metadata: Schema.optional(
-    Schema.Record({ key: Schema.String, value: Schema.Unknown }),
+    Schema.Record({ key: Schema.String, value: Schema.Unknown })
   ),
 }) {}
 
@@ -124,45 +124,45 @@ export class AddOptions extends Schema.Class<AddOptions>("AddOptions")({
 
 export class PDFNotFoundError extends Schema.TaggedError<PDFNotFoundError>()(
   "PDFNotFoundError",
-  { path: Schema.String },
+  { path: Schema.String }
 ) {}
 
 export class PDFExtractionError extends Schema.TaggedError<PDFExtractionError>()(
   "PDFExtractionError",
-  { path: Schema.String, reason: Schema.String },
+  { path: Schema.String, reason: Schema.String }
 ) {}
 
 export class MarkdownNotFoundError extends Schema.TaggedError<MarkdownNotFoundError>()(
   "MarkdownNotFoundError",
-  { path: Schema.String },
+  { path: Schema.String }
 ) {}
 
 export class MarkdownExtractionError extends Schema.TaggedError<MarkdownExtractionError>()(
   "MarkdownExtractionError",
-  { path: Schema.String, reason: Schema.String },
+  { path: Schema.String, reason: Schema.String }
 ) {}
 
 export class OllamaError extends Schema.TaggedError<OllamaError>()(
   "OllamaError",
-  { reason: Schema.String },
+  { reason: Schema.String }
 ) {}
 
 export class DatabaseError extends Schema.TaggedError<DatabaseError>()(
   "DatabaseError",
-  { reason: Schema.String },
+  { reason: Schema.String }
 ) {}
 
 export class DocumentNotFoundError extends Schema.TaggedError<DocumentNotFoundError>()(
   "DocumentNotFoundError",
-  { query: Schema.String },
+  { query: Schema.String }
 ) {}
 
 export class DocumentExistsError extends Schema.TaggedError<DocumentExistsError>()(
   "DocumentExistsError",
-  { title: Schema.String, path: Schema.String },
+  { title: Schema.String, path: Schema.String }
 ) {}
 
 export class URLFetchError extends Schema.TaggedError<URLFetchError>()(
   "URLFetchError",
-  { url: Schema.String, reason: Schema.String },
+  { url: Schema.String, reason: Schema.String }
 ) {}
