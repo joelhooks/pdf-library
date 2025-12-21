@@ -222,15 +222,35 @@ When you add documents with `--enrich`, the LLM extracts:
 
 ### LLM Providers
 
-Enrichment tries local Ollama first, falls back to Anthropic if configured:
+Enrichment supports multiple providers via the config system:
 
 ```bash
-# Uses Ollama by default (llama3.2:3b)
-pdf-brain add paper.pdf --enrich
+# Check current config
+pdf-brain config show
 
-# Set Anthropic API key for fallback
-export ANTHROPIC_API_KEY=sk-ant-...
+# Use local Ollama (default)
+pdf-brain config set enrichment.provider ollama
+pdf-brain config set enrichment.model llama3.2:3b
+
+# Use AI Gateway (Anthropic, OpenAI, etc.)
+pdf-brain config set enrichment.provider gateway
+pdf-brain config set enrichment.model anthropic/claude-haiku-4-5
+export AI_GATEWAY_API_KEY=your-key
+
+# Provider priority: config > CLI flag > auto-detect
+pdf-brain add paper.pdf --enrich              # uses config
+pdf-brain add paper.pdf --enrich --provider ollama  # override
 ```
+
+### Enrichment Fallback
+
+If LLM enrichment fails (API error, rate limit, malformed response), pdf-brain automatically falls back to heuristic-based enrichment:
+
+- **Title**: Cleaned from filename
+- **Tags**: Extracted from path, filename, and content keywords
+- **Category**: Inferred from directory structure
+
+The actual error is logged so you can debug provider issues.
 
 ## Taxonomy
 
@@ -293,12 +313,78 @@ pdf-brain taxonomy seed --file my-taxonomy.json
 
 ## Configuration
 
-| Variable            | Default                    | Description              |
-| ------------------- | -------------------------- | ------------------------ |
-| `PDF_LIBRARY_PATH`  | `~/Documents/.pdf-library` | Library storage location |
-| `OLLAMA_HOST`       | `http://localhost:11434`   | Ollama API endpoint      |
-| `OLLAMA_MODEL`      | `mxbai-embed-large`        | Embedding model          |
-| `ANTHROPIC_API_KEY` | -                          | Fallback for enrichment  |
+### Config File
+
+pdf-brain stores configuration in `$PDF_LIBRARY_PATH/config.json`:
+
+```bash
+# Show all config
+pdf-brain config show
+
+# Get a specific value
+pdf-brain config get enrichment.provider
+
+# Set a value
+pdf-brain config set enrichment.model anthropic/claude-haiku-4-5
+```
+
+### Config Options
+
+```json
+{
+  "ollama": {
+    "host": "http://localhost:11434"
+  },
+  "embedding": {
+    "provider": "ollama",
+    "model": "mxbai-embed-large"
+  },
+  "enrichment": {
+    "provider": "gateway",
+    "model": "anthropic/claude-haiku-4-5"
+  },
+  "judge": {
+    "provider": "gateway",
+    "model": "anthropic/claude-haiku-4-5"
+  }
+}
+```
+
+| Setting               | Default                  | Description                          |
+| --------------------- | ------------------------ | ------------------------------------ |
+| `ollama.host`         | `http://localhost:11434` | Ollama API endpoint                  |
+| `embedding.provider`  | `ollama`                 | Embedding provider (ollama only)     |
+| `embedding.model`     | `mxbai-embed-large`      | Embedding model (1024 dims)          |
+| `enrichment.provider` | `ollama`                 | LLM provider: `ollama` or `gateway`  |
+| `enrichment.model`    | `llama3.2:3b`            | Model for document enrichment        |
+| `judge.provider`      | `ollama`                 | Provider for concept deduplication   |
+| `judge.model`         | `llama3.2:3b`            | Model for judging duplicate concepts |
+
+### Environment Variables
+
+| Variable             | Default                    | Description              |
+| -------------------- | -------------------------- | ------------------------ |
+| `PDF_LIBRARY_PATH`   | `~/Documents/.pdf-library` | Library storage location |
+| `OLLAMA_HOST`        | `http://localhost:11434`   | Ollama API endpoint      |
+| `AI_GATEWAY_API_KEY` | -                          | API key for AI Gateway   |
+
+### AI Gateway
+
+For cloud LLM providers (Anthropic, OpenAI, etc.), use the AI Gateway:
+
+```bash
+# Set your API key
+export AI_GATEWAY_API_KEY=your-key
+
+# Configure to use gateway
+pdf-brain config set enrichment.provider gateway
+pdf-brain config set enrichment.model anthropic/claude-haiku-4-5
+
+# Other supported models:
+# - anthropic/claude-sonnet-4-20250514
+# - openai/gpt-4o-mini
+# - openai/gpt-4o
+```
 
 ## Storage
 
@@ -334,13 +420,44 @@ pdf-brain ships as an MCP server for AI coding assistants:
 }
 ```
 
-Tools exposed:
+### Document Tools
 
-- `pdf-brain_add` - Add document to library
-- `pdf-brain_search` - Semantic search
-- `pdf-brain_list` - List documents
-- `pdf-brain_read` - Get document details
-- `pdf-brain_stats` - Library statistics
+| Tool                  | Description                                   |
+| --------------------- | --------------------------------------------- |
+| `pdf-brain_add`       | Add PDF/Markdown to library (supports URLs)   |
+| `pdf-brain_batch_add` | Bulk ingest from directory                    |
+| `pdf-brain_search`    | Unified semantic search (docs + concepts)     |
+| `pdf-brain_list`      | List documents, optionally filter by tag      |
+| `pdf-brain_read`      | Get document details and metadata             |
+| `pdf-brain_remove`    | Remove document from library                  |
+| `pdf-brain_tag`       | Set tags on a document                        |
+| `pdf-brain_stats`     | Library statistics (docs, chunks, embeddings) |
+
+### Taxonomy Tools
+
+| Tool                        | Description                              |
+| --------------------------- | ---------------------------------------- |
+| `pdf-brain_taxonomy_list`   | List all concepts (optional tree format) |
+| `pdf-brain_taxonomy_tree`   | Visual concept tree with box-drawing     |
+| `pdf-brain_taxonomy_add`    | Add new concept to taxonomy              |
+| `pdf-brain_taxonomy_assign` | Assign concept to document               |
+| `pdf-brain_taxonomy_search` | Search concepts by label                 |
+| `pdf-brain_taxonomy_seed`   | Load taxonomy from JSON file             |
+
+### Config Tools
+
+| Tool                    | Description               |
+| ----------------------- | ------------------------- |
+| `pdf-brain_config_show` | Display all config        |
+| `pdf-brain_config_get`  | Get specific config value |
+| `pdf-brain_config_set`  | Set config value          |
+
+### Utility Tools
+
+| Tool               | Description                   |
+| ------------------ | ----------------------------- |
+| `pdf-brain_check`  | Check if Ollama is ready      |
+| `pdf-brain_repair` | Fix database integrity issues |
 
 ## Troubleshooting
 
