@@ -283,6 +283,25 @@ ${
           })
         );
 
+        if (enrichResult._tag === "Left") {
+          // Check for fatal errors that should stop the entire batch
+          const errMsg = String(enrichResult.left.message || enrichResult.left);
+          const isFatalError =
+            errMsg.includes("Insufficient funds") ||
+            errMsg.includes("rate limit") ||
+            errMsg.includes("Rate limit") ||
+            errMsg.includes("quota exceeded") ||
+            errMsg.includes("API key");
+
+          if (isFatalError) {
+            console.error(`\n\n🛑 FATAL ERROR: ${errMsg}`);
+            console.error(
+              "Stopping batch import to avoid wasting resources.\n"
+            );
+            process.exit(1);
+          }
+        }
+
         if (enrichResult._tag === "Right") {
           const r = enrichResult.right;
           title = r.title;
