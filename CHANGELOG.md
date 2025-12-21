@@ -1,5 +1,11 @@
 # pdf-brain
 
+## 1.1.1
+
+### Patch Changes
+
+- Graceful fallback to heuristics when LLM enrichment fails. Now logs the actual error message for debugging instead of silently falling back.
+
 ## 1.1.0
 
 ### Minor Changes

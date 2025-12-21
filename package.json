@@ -1,6 +1,6 @@
 {
   "name": "pdf-brain",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Local PDF knowledge base with vector search",
   "type": "module",
   "main": "src/index.ts",
