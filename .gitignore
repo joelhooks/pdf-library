@@ -22,6 +22,11 @@ dist/
 # Logs
 *.log
 
+# Environment (NEVER commit)
+.env
+.env.*
+!.env.example
+
 # Test files
 *.test.pdf
 postgres.data
