@@ -15,7 +15,8 @@
     "setup": "./scripts/setup.sh",
     "changeset": "changeset",
     "version": "changeset version",
-    "release": "bun test && bun run typecheck && changeset publish"
+    "release": "bun test && bun run typecheck && changeset publish",
+    "prepare": "husky"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^2.0.56",
@@ -41,10 +42,14 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.8",
+    "@secretlint/secretlint-rule-preset-recommend": "^11.2.5",
     "@types/bun": "latest",
     "@types/mdast": "^4.0.4",
     "@types/react": "^19.2.7",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.7",
     "react-devtools-core": "^7.0.1",
+    "secretlint": "^11.2.5",
     "typescript": "^5.7.2"
   },
   "peerDependencies": {
@@ -80,5 +85,8 @@
     "pkm"
   ],
   "author": "Joel Hooks",
-  "license": "MIT"
+  "license": "MIT",
+  "lint-staged": {
+    "*": "secretlint"
+  }
 }
